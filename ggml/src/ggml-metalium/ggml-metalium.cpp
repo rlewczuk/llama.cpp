@@ -17,7 +17,7 @@
 #include "ttnn/tensor/tensor.hpp"
 #include "ttnn/tensor/types.hpp"
 #include "ttnn/types.hpp"
-#include "types/arch.h"
+#include "umd/device/types/arch.h"
 #include <sys/types.h>
 #include <algorithm>
 #include <array>
