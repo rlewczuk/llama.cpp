@@ -419,9 +419,7 @@ static void tensor2ggml(const tt::tt_metal::Tensor& tensor, void* dst, ggml_type
 
     tt::tt_metal::Tensor row_major_tensor = ttnn::untilize(tensor).cpu();
     GGML_ASSERT(row_major_tensor.storage_type() == tt::tt_metal::StorageType::HOST);
-    GGML_ASSERT(std::holds_alternative<tt::tt_metal::HostStorage>(row_major_tensor.storage()));
-
-    const tt::tt_metal::HostStorage& storage = std::get<tt::tt_metal::HostStorage>(row_major_tensor.storage());
+    const tt::tt_metal::HostStorage& storage = row_major_tensor.host_storage();
     const auto buffer = storage.buffer().get_shard({0, 0}).value();
     auto view = buffer.view_as<SrcType>();
     const SrcType* buf = &view[0];
@@ -457,7 +455,7 @@ static void tensor2ggml(const tt::tt_metal::Tensor& tensor, void* dst, ggml_type
 
     auto src_adaptor = [](const SrcType& src) -> float {
         if constexpr(std::is_same_v<SrcType, bfloat16>) {
-            return src.to_float();
+            return static_cast<float>(src);
         }
         else if (std::is_same_v<SrcType, float>) {
             return src;
@@ -863,15 +861,8 @@ static void ggml_backend_metalium_mul_mat(ggml_backend_metalium_context * ctx, s
         }
         // TODO: Ask TT to support multiplication of pre-transposed tensors. Calling transpose here is inefficient
         // https://github.com/tenstorrent/tt-metal/issues/9709
-        ttnn::operations::matmul::Matmul cfg = ttnn::operations::matmul::Matmul{
-            .compute_kernel_config = make_compute_kernel_config(a.device()),
-            // XXX: Why output_tile doesn't have a default value?
-            .output_tile = std::nullopt,
-            .global_cb = std::nullopt,
-            .sub_device_id = std::nullopt,
-        };
         *cm = {
-            .tensor = std::make_shared<tt::tt_metal::Tensor>(ttnn::operations::matmul::matmul(b, aT, std::nullopt, cfg)),
+            .tensor = std::make_shared<tt::tt_metal::Tensor>(ttnn::operations::matmul::matmul(b, aT)),
             .ggtype = dst->type,
             .bufctx = cm->bufctx
         };
@@ -2018,6 +2009,8 @@ static struct ggml_backend_buffer_i ggml_backend_metalium_buffer_interface = {
     /* .memset_tensor   = */ nullptr,
     /* .set_tensor      = */ ggml_backend_metalium_buffer_set_tensor,
     /* .get_tensor      = */ ggml_backend_metalium_buffer_get_tensor,
+    /* .set_tensor_2d   = */ nullptr,
+    /* .get_tensor_2d   = */ nullptr,
     /* .cpy_tensor      = */ ggml_backend_metalium_buffer_cpy_tensor,
     /* .clear           = */ ggml_backend_metalium_buffer_clear,
     /* .reset           = */ ggml_backend_metalium_buffer_reset,
@@ -2418,9 +2411,8 @@ static bool ggml_backend_metalium_device_supports_buft(ggml_backend_dev_t dev, g
 
 static void ggml_backend_metalium_synchronize(ggml_backend_t backend)
 {
+    GGML_UNUSED(backend);
     return;
-    ggml_backend_metalium_context * ctx = (ggml_backend_metalium_context *)backend->context;
-    tt::tt_metal::Finish(ctx->device->get_mesh_device()->get_device(0)->command_queue());
 }
 
 static struct ggml_backend_i metalium_backend_i = {
@@ -2428,6 +2420,8 @@ static struct ggml_backend_i metalium_backend_i = {
     /* .free                    = */ ggml_backend_metalium_free,
     /* .set_tensor_async        = */ NULL,
     /* .get_tensor_async        = */ NULL,
+    /* .set_tensor_2d_async     = */ NULL,
+    /* .get_tensor_2d_async     = */ NULL,
     /* .cpy_tensor_async        = */ NULL,
     /* .synchronize             = */ ggml_backend_metalium_synchronize,
     /* .graph_plan_create       = */ NULL,
@@ -2436,7 +2430,8 @@ static struct ggml_backend_i metalium_backend_i = {
     /* .graph_plan_compute      = */ NULL,
     /* .graph_compute           = */ ggml_backend_metalium_graph_compute,
     /* .event_record            = */ NULL,
-    /* .event_wait              = */ NULL
+    /* .event_wait              = */ NULL,
+    /* .graph_optimize          = */ NULL,
 };
 
 static ggml_guid_t ggml_backend_metalium_guid(void) {
@@ -2592,9 +2587,6 @@ GGML_BACKEND_API ggml_backend_reg_t ggml_backend_metalium_reg()
         if(getenv("TT_METAL_HOME") == NULL) {
             fmt::println(stderr, "The TT_METAL_HOME environment variables must be set to use the Metalium backend");
             abort();
-        }
-        if(!g_debug_flags.disable_program_cache) {
-            tt::tt_metal::detail::EnablePersistentKernelCache();
         }
         // TODO: Support multiple devices (TT supports mesh configuration so it's going to be tricky)
         // but for now we just work on 1 device at a time
