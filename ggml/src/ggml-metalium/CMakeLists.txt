@@ -11,10 +11,6 @@ target_include_directories(ggml-metalium PRIVATE
     ..
 )
 
-target_link_directories(ggml-metalium PRIVATE
-    $ENV{TT_METAL_HOME}/build/ttnn
-)
-
 target_link_libraries(ggml-metalium PRIVATE
     TT::Metalium
     TTNN::TTNN
