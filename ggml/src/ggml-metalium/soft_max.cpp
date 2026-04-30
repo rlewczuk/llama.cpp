@@ -17,43 +17,68 @@
 using namespace tt::tt_metal;
 
 struct SoftMaxDeviceOperation {
+    using operation_attributes_t = SoftMaxDeviceOperation;
+    struct tensor_args_t {
+        const Tensor & a;
+        const std::optional<Tensor> mask;
+    };
+    using spec_return_value_t = std::vector<ttnn::TensorSpec>;
+    using tensor_return_value_t = std::vector<Tensor>;
+
     const tt::tt_metal::MemoryConfig output_mem_config;
     const tt::tt_metal::DataType output_dtype{};
     float scale = 1.f;
 
-    void validate_with_output_tensors(
-        const std::vector<Tensor>& input_tensors, const std::vector<std::optional<Tensor>>& output_tensors) const;
-    std::vector<ttnn::TensorSpec> compute_output_specs(
-        const std::vector<Tensor>& input_tensors, const std::vector<std::optional<Tensor>>& output_tensors) const;
+    struct ProgramFactory {
+        struct shared_variables_t {
+            KernelHandle reader;
+            KernelHandle writer;
+            CoreRangeSet all_cores;
+        };
+        using cached_program_t = ttnn::device_operation::CachedProgram<shared_variables_t>;
 
-    std::vector<Tensor> create_output_tensors(
-        const std::vector<Tensor>& input_tensors, const std::vector<std::optional<Tensor>>& output_tensors) const;
-    tt::tt_metal::operation::ProgramWithCallbacks create_program(
-        const std::vector<Tensor>& input_tensors, std::vector<Tensor>& output_tensors) const;
+        static cached_program_t create(
+            const operation_attributes_t & operation_attributes,
+            const tensor_args_t & tensor_args,
+            tensor_return_value_t & output_tensors);
+
+        static void override_runtime_arguments(
+            cached_program_t & cached_program,
+            const operation_attributes_t & operation_attributes,
+            const tensor_args_t & tensor_args,
+            tensor_return_value_t & output_tensors);
+    };
+    using program_factory_t = std::variant<ProgramFactory>;
+
+    static void validate_on_program_cache_miss(
+        const operation_attributes_t & operation_attributes,
+        const tensor_args_t & tensor_args);
+    static spec_return_value_t compute_output_specs(
+        const operation_attributes_t & operation_attributes,
+        const tensor_args_t & tensor_args);
+    static tensor_return_value_t create_output_tensors(
+        const operation_attributes_t & operation_attributes,
+        const tensor_args_t & tensor_args);
 };
 
 ttnn::Tensor ttggml::SoftMaxOperation::invoke(const Tensor& a, float scale) {
-    return tt::tt_metal::operation::run(
+    return ttnn::device_operation::launch<SoftMaxDeviceOperation>(
         SoftMaxDeviceOperation{
             a.memory_config(),
             a.dtype(),
             scale
         },
-        {a},
-        {},
-        {})[0];
+        SoftMaxDeviceOperation::tensor_args_t{a, std::nullopt})[0];
 }
 
 ttnn::Tensor ttggml::SoftMaxOperation::invoke(const Tensor& a, const Tensor& mask, float scale) {
-    return tt::tt_metal::operation::run(
+    return ttnn::device_operation::launch<SoftMaxDeviceOperation>(
         SoftMaxDeviceOperation{
             a.memory_config(),
             a.dtype(),
             scale
         },
-        {a, mask},
-        {},
-        {})[0];
+        SoftMaxDeviceOperation::tensor_args_t{a, mask})[0];
 }
 
 std::vector<ttnn::TensorSpec> SoftMaxDeviceOperation::compute_output_specs(
