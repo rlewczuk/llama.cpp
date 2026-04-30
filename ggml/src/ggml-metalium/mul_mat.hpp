@@ -1,4 +1,3 @@
-#include <ttnn/decorators.hpp>
 #include <ttnn/tensor/tensor.hpp>
 #include <ttnn/tensor/types.hpp>
 
@@ -12,5 +11,5 @@ struct MulMatOperation {
 /**
  * Implements GGML's MUL_MAT operation wich computes b @ aT
  */
-constexpr auto mul_mat = ttnn::register_operation<"ttggml::mul_mat", ttggml::MulMatOperation>();
+ttnn::Tensor mul_mat(const Tensor& a, const Tensor& b, bool high_percision = false);
 }
