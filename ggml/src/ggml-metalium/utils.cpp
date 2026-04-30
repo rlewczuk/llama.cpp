@@ -87,7 +87,7 @@ KernelHandle CreateMetaliumKernel(
 
         const char* metalium_kernel_root = getenv("GGML_METALIUM_KERNEL_ROOT");
         if(metalium_kernel_root != nullptr) {
-            p = fs::path(metalium_kernel_root) / str;
+            p = (fs::path(metalium_kernel_root) / str).generic_string() + ".cpp";
             if(fs::exists(p)) {
                 return tt::tt_metal::CreateKernel(program, p.string(), core_spec, config);
             }

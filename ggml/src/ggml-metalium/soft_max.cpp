@@ -59,6 +59,11 @@ struct SoftMaxDeviceOperation {
     static tensor_return_value_t create_output_tensors(
         const operation_attributes_t & operation_attributes,
         const tensor_args_t & tensor_args);
+    static void validate_on_program_cache_hit(
+        const operation_attributes_t & operation_attributes,
+        const tensor_args_t & tensor_args) {
+        validate_on_program_cache_miss(operation_attributes, tensor_args);
+    }
 };
 
 ttnn::Tensor ttggml::SoftMaxOperation::invoke(const Tensor& a, float scale) {
@@ -82,47 +87,34 @@ ttnn::Tensor ttggml::SoftMaxOperation::invoke(const Tensor& a, const Tensor& mas
 }
 
 std::vector<ttnn::TensorSpec> SoftMaxDeviceOperation::compute_output_specs(
-    const std::vector<Tensor>& input_tensors, const std::vector<std::optional<Tensor>>& output_tensors) const
+    const operation_attributes_t & operation_attributes, const tensor_args_t & tensor_args)
 {
-    if (!output_tensors.empty() && output_tensors[0].has_value()) {
-        return {output_tensors[0]->tensor_spec()};
-    }
-
-    const auto& a = input_tensors.at(0);
+    const auto& a = tensor_args.a;
     return {TensorSpec(
         a.logical_shape(),
         tt::tt_metal::TensorLayout(
-            output_dtype,
+            operation_attributes.output_dtype,
             tt::tt_metal::PageConfig(ttnn::TILE_LAYOUT),
-            output_mem_config)
+            operation_attributes.output_mem_config)
     )};
 }
 
 std::vector<ttnn::Tensor> SoftMaxDeviceOperation::create_output_tensors(
-    const std::vector<Tensor>& input_tensors, const std::vector<std::optional<Tensor>>& output_tensors) const {
-    if (!output_tensors.empty() && output_tensors[0].has_value()) {
-        return {output_tensors[0].value()};
-    }
-    const auto& input_tensor = input_tensors.at(0);
-    auto spec = compute_output_specs(input_tensors, output_tensors)[0];
+    const operation_attributes_t & operation_attributes, const tensor_args_t & tensor_args) {
+    const auto& input_tensor = tensor_args.a;
+    auto spec = compute_output_specs(operation_attributes, tensor_args)[0];
     return {create_device_tensor(spec, input_tensor.device())};
 }
 
-void SoftMaxDeviceOperation::validate_with_output_tensors(
-    const std::vector<Tensor>& input_tensors, const std::vector<std::optional<Tensor>>& output_tensors) const {
-        const auto& a_tensor = input_tensors.at(0);
-        if(!output_tensors.empty() && output_tensors[0].has_value()) {
-            const auto& o_tensor = output_tensors[0].value();
-            TT_FATAL(input_tensors.at(0).logical_shape() == output_tensors[0].value().logical_shape(), "Expect shape be same");
-            // XXX: We will deal with alternative data type support later
-            TT_FATAL(o_tensor.dtype() == tt::tt_metal::DataType::BFLOAT16, "Output data type must be BFLOAT16");
-        }
+void SoftMaxDeviceOperation::validate_on_program_cache_miss(
+    const operation_attributes_t &, const tensor_args_t & tensor_args) {
+        const auto& a_tensor = tensor_args.a;
 
         // XXX: We will deal with alternative data type support later
         TT_FATAL(a_tensor.dtype() == tt::tt_metal::DataType::BFLOAT16, "Input data type must be BFLOAT16");
 
-        if(input_tensors.size() > 1) {
-            const auto& mask_tensor = input_tensors.at(1);
+        if(tensor_args.mask.has_value()) {
+            const auto& mask_tensor = tensor_args.mask.value();
             TT_FATAL(mask_tensor.dtype() == tt::tt_metal::DataType::BFLOAT16, "Mask data type must be BFLOAT16");
             TT_FATAL(a_tensor.logical_shape()[0] % mask_tensor.logical_shape()[0] == 0 &&
                 a_tensor.logical_shape()[1] % mask_tensor.logical_shape()[1] == 0 &&
@@ -132,13 +124,15 @@ void SoftMaxDeviceOperation::validate_with_output_tensors(
 
 }
 
-tt::tt_metal::operation::ProgramWithCallbacks SoftMaxDeviceOperation::create_program(
-    const std::vector<Tensor>& input_tensors, std::vector<Tensor>& output_tensors) const
+SoftMaxDeviceOperation::ProgramFactory::cached_program_t SoftMaxDeviceOperation::ProgramFactory::create(
+    const operation_attributes_t & operation_attributes,
+    const tensor_args_t & tensor_args,
+    tensor_return_value_t & output_tensors)
 {
     tt::tt_metal::Program program{};
-    const auto& a_tensor = input_tensors.at(0);
+    const auto& a_tensor = tensor_args.a;
     const auto& o_tensor = output_tensors.at(0);
-    const auto mask_tensor = at_index(input_tensors, 1);
+    const auto mask_tensor = tensor_args.mask;
 
     const uint32_t width = a_tensor.logical_shape()[-1];
     const uint32_t height = a_tensor.logical_shape()[-2];
@@ -208,9 +202,9 @@ tt::tt_metal::operation::ProgramWithCallbacks SoftMaxDeviceOperation::create_pro
     });
 
     std::map<std::string, std::string> defines;
-    if(scale != 1.f) {
-        defines["SCALE"] = to_string_precise(scale);
-        const uint32_t* scale_int = reinterpret_cast<const uint32_t*>(&scale);
+    if(operation_attributes.scale != 1.f) {
+        defines["SCALE"] = to_string_precise(operation_attributes.scale);
+        const uint32_t* scale_int = reinterpret_cast<const uint32_t*>(&operation_attributes.scale);
         defines["SCALE_FP32_ENCODED_AS_INT"] = std::to_string(*scale_int);
     }
     if(mask) {
@@ -243,35 +237,40 @@ tt::tt_metal::operation::ProgramWithCallbacks SoftMaxDeviceOperation::create_pro
         }
     }
 
-    auto override_runtime_args_callback = [reader, writer, all_cores](
-                                                  const void* operation,
-                                                  Program& program,
-                                                  const std::vector<Tensor>& input_tensors,
-                                                  const std::vector<std::optional<const Tensor>>&,
-                                                  const std::vector<Tensor>& output_tensors) {
-            (void)operation;
-            auto* a = input_tensors.at(0).buffer();
-            auto* o = output_tensors.at(0).buffer();
+    return cached_program_t{std::move(program), shared_variables_t{reader, writer, all_cores}};
+  }
 
-            for(const auto& range : all_cores.ranges()) {
-                for (const auto& core : range) {
-                    {
-                        auto& runtime_args = GetRuntimeArgs(program, reader, core);
-                        runtime_args[0] = a->address();
+void SoftMaxDeviceOperation::ProgramFactory::override_runtime_arguments(
+    cached_program_t & cached_program,
+    const operation_attributes_t &,
+    const tensor_args_t & tensor_args,
+    tensor_return_value_t & output_tensors) {
+    auto* a = tensor_args.a.buffer();
+    auto* o = output_tensors.at(0).buffer();
 
-                        if(input_tensors.size() > 1) {
-                            auto* mask = input_tensors.at(1).buffer();
-                            runtime_args[5] = mask->address();
-                        }
-                    }
+    for(const auto& range : cached_program.shared_variables.all_cores.ranges()) {
+        for (const auto& core : range) {
+            {
+                auto& runtime_args = GetRuntimeArgs(cached_program.program, cached_program.shared_variables.reader, core);
+                runtime_args[0] = a->address();
 
-                    {
-                        auto& runtime_args = GetRuntimeArgs(program, writer, core);
-                        runtime_args[0] = o->address();
-                    }
+                if(tensor_args.mask.has_value()) {
+                    runtime_args[5] = tensor_args.mask.value().buffer()->address();
                 }
             }
-        };
 
-        return {std::move(program), override_runtime_args_callback};
+            {
+                auto& runtime_args = GetRuntimeArgs(cached_program.program, cached_program.shared_variables.writer, core);
+                runtime_args[0] = o->address();
+            }
+        }
+    }
+}
+
+ttnn::Tensor ttggml::soft_max(const Tensor& a, float scale) {
+    return SoftMaxOperation::invoke(a, scale);
+}
+
+ttnn::Tensor ttggml::soft_max(const Tensor& a, const Tensor& mask, float scale) {
+    return SoftMaxOperation::invoke(a, mask, scale);
 }

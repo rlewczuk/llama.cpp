@@ -1,5 +1,5 @@
-#include "compute_kernel_api/pack.h"
-#include "compute_kernel_api/reg_api.h"
+#include "api/compute/pack.h"
+#include "api/compute/reg_api.h"
 #define REDUCE_OP PoolType::MAX
 #define REDUCE_DIM ReduceDim::REDUCE_ROW
 
@@ -176,8 +176,7 @@ static void make_mask(const int w, const int h, const int dst_tile_id) {
 // MAIN KERNEL
 // ============================================================================
 
-namespace NAMESPACE {
-void MAIN {
+void kernel_main() {
     uint32_t width = get_arg_val<uint32_t>(0);
     uint32_t height = get_arg_val<uint32_t>(1);
     uint32_t n_head = get_arg_val<uint32_t>(3);
@@ -457,5 +456,4 @@ void MAIN {
     cb_pop_front(cb_tile_mask, 4);
     #endif
     cb_pop_front(cb_const1, 1);
-}
 }

@@ -1,10 +1,10 @@
-#include "compute_kernel_api/common.h"
-#include "compute_kernel_api/tile_move_copy.h"
-#include "compute_kernel_api/eltwise_unary/eltwise_unary.h"
-#include "compute_kernel_api/eltwise_unary/exp.h"
-#include "compute_kernel_api/eltwise_unary/recip.h"
-#include "compute_kernel_api/eltwise_unary/identity.h"
-#include "compute_kernel_api/eltwise_unary/trigonometry.h"
+#include "api/compute/common.h"
+#include "api/compute/tile_move_copy.h"
+#include "api/compute/eltwise_unary/eltwise_unary.h"
+#include "api/compute/eltwise_unary/exp.h"
+#include "api/compute/eltwise_unary/recip.h"
+#include "api/compute/eltwise_unary/identity.h"
+#include "api/compute/eltwise_unary/trigonometry.h"
 #include <string.h>
 
 #include <tools/profiler/kernel_profiler.hpp>
@@ -239,8 +239,7 @@ inline void rope_tile_init(float inv_d)
 }
 #endif
 
-namespace NAMESPACE {
-void MAIN {
+void kernel_main() {
 
     uint32_t n_tiles_width_active = get_arg_val<uint32_t>(0);
     uint32_t n_tiles_width = get_arg_val<uint32_t>(1);
@@ -312,5 +311,4 @@ void MAIN {
     }
     #endif
 
-}
 }

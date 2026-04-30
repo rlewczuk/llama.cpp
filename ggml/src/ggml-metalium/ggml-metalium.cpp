@@ -71,7 +71,11 @@
 #include "mul_mat.hpp"
 #include "soft_max.hpp"
 
+#ifdef GGML_METALIUM_EMBED_KERNELS
 extern void metalium_register_all_kernel();
+#else
+static void metalium_register_all_kernel() {}
+#endif
 
 struct ggml_backend_metalium_context {
     ttnn::IDevice* device = nullptr;
@@ -237,7 +241,7 @@ static size_t g_metalium_base_offset = 0;
 
 static tt::tt_metal::DataType ggml2tt_type_internal(ggml_type ggtype, tt::ARCH arch) {
     // This table is consulted to map GGML types to TT types dueing tensor creation
-    if(arch == tt::ARCH::WORMHOLE_B0) {
+    if(arch == tt::ARCH::WORMHOLE_B0 || arch == tt::ARCH::BLACKHOLE) {
         static constexpr std::array<tt::tt_metal::DataType, GGML_TYPE_COUNT> table = {
             /*GGML_TYPE_F32        = */ tt::tt_metal::DataType::BFLOAT16,
             /*GGML_TYPE_F16        = */ tt::tt_metal::DataType::BFLOAT16,
@@ -987,15 +991,8 @@ static void ggml_backend_metalium_mul_mat(ggml_backend_metalium_context * ctx, s
         GGML_ASSERT(aT.is_allocated() && "Matrix aT is not allocated");
         // TODO: Ask TT to support multiplication of pre-transposed tensors. Calling transpose here is inefficient
         // https://github.com/tenstorrent/tt-metal/issues/9709
-        ttnn::operations::matmul::Matmul cfg = ttnn::operations::matmul::Matmul{
-            .compute_kernel_config = make_compute_kernel_config(a.device()),
-            // XXX: Why output_tile doesn't have a default value?
-            .output_tile = std::nullopt,
-            .global_cb = std::nullopt,
-            .sub_device_id = std::nullopt,
-        };
         *dst_meta = {
-            .tensor = std::make_shared<tt::tt_metal::Tensor>(ttnn::operations::matmul::matmul(b, aT, std::nullopt, cfg)),
+            .tensor = std::make_shared<tt::tt_metal::Tensor>(ttnn::operations::matmul::matmul(b, aT)),
         };
     }
     else {
@@ -2494,6 +2491,8 @@ static struct ggml_backend_buffer_i ggml_backend_metalium_buffer_interface = {
     /* .memset_tensor   = */ nullptr,
     /* .set_tensor      = */ ggml_backend_metalium_buffer_set_tensor,
     /* .get_tensor      = */ ggml_backend_metalium_buffer_get_tensor,
+    /* .set_tensor_2d   = */ nullptr,
+    /* .get_tensor_2d   = */ nullptr,
     /* .cpy_tensor      = */ ggml_backend_metalium_buffer_cpy_tensor,
     /* .clear           = */ ggml_backend_metalium_buffer_clear,
     /* .reset           = */ ggml_backend_metalium_buffer_reset,
@@ -2917,6 +2916,7 @@ static bool ggml_backend_metalium_device_supports_buft(ggml_backend_dev_t dev, g
 
 static void ggml_backend_metalium_synchronize(ggml_backend_t backend)
 {
+    GGML_UNUSED(backend);
     return;
     ggml_backend_metalium_context * ctx = (ggml_backend_metalium_context *)backend->context;
     tt::tt_metal::distributed::Finish(ctx->device->get_mesh_device()->mesh_command_queue());
@@ -2927,6 +2927,8 @@ static struct ggml_backend_i metalium_backend_i = {
     /* .free                    = */ ggml_backend_metalium_free,
     /* .set_tensor_async        = */ NULL,
     /* .get_tensor_async        = */ NULL,
+    /* .set_tensor_2d_async     = */ NULL,
+    /* .get_tensor_2d_async     = */ NULL,
     /* .cpy_tensor_async        = */ NULL,
     /* .synchronize             = */ ggml_backend_metalium_synchronize,
     /* .graph_plan_create       = */ NULL,
@@ -3085,7 +3087,7 @@ GGML_BACKEND_API ggml_backend_reg_t ggml_backend_metalium_reg()
             abort();
         }
         if(!g_debug_flags.disable_program_cache) {
-            tt::tt_metal::detail::EnablePersistentKernelCache();
+            // no-op: removed in newer Metalium
         }
         else {
             fmt::println("Disabling persistent kernel cache. Things will be slower");
@@ -3143,7 +3145,7 @@ GGML_BACKEND_API ggml_backend_reg_t ggml_backend_metalium_reg()
             ttnn::enable_program_cache(*device);
         }
         // Limit device support to the ones I own (GS is removed as TTNN dropped support)
-        GGML_ASSERT(device->arch() == tt::ARCH::WORMHOLE_B0);
+        GGML_ASSERT(device->arch() == tt::ARCH::WORMHOLE_B0 || device->arch() == tt::ARCH::BLACKHOLE);
         dev_ctx->device = device;
         dev_ctx->device_id = device_id;
         dev_ctx->name = "METALIUM" + std::to_string(device_id);

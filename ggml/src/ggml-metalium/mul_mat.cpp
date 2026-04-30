@@ -232,3 +232,7 @@ void MulMatDeviceOperation::ProgramFactory::override_runtime_arguments(
         }
     }
 }
+
+ttnn::Tensor ttggml::mul_mat(const Tensor & a, const Tensor & b, bool high_percision) {
+    return MulMatOperation::invoke(a, b, high_percision);
+}
