@@ -62,7 +62,7 @@
 #include <ttnn/operations/reduction/generic/generic_reductions.hpp>
 #include <ttnn/cpp/ttnn/operations/data_movement/gather/tosa/gather_tosa.hpp>
 #include <ttnn/cpp/ttnn/operations/data_movement/scatter/tosa_scatter.hpp>
-#include <ttnn/cpp/ttnn/operations/transformer/sdpa_decode/sdpa_decode.hpp>
+#include <ttnn/operations/transformer/sdpa_decode/sdpa_decode.hpp>
 
 
 #include <memory>

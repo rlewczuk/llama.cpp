@@ -59,17 +59,21 @@ struct MulMatDeviceOperation {
 };
 
 ttnn::Tensor ttggml::MulMatOperation::invoke(const Tensor & a, const Tensor & b, bool high_percision) {
-    return ttnn::device_operation::launch<MulMatDeviceOperation>(
+    std::cout << "MulMatOperation::invoke (1)" << std::endl;
+    auto tensor = ttnn::device_operation::launch<MulMatDeviceOperation>(
         MulMatDeviceOperation{
             b.memory_config(),
             b.dtype(),
             high_percision,
         },
-        MulMatDeviceOperation::tensor_args_t{a, b})[0];
+        MulMatDeviceOperation::tensor_args_t{ a, b })[0];
+    std::cout << "MulMatOperation::invoke (1) done" << std::endl;
+    return tensor;
 }
 
 std::vector<ttnn::TensorSpec> MulMatDeviceOperation::compute_output_specs(
     const operation_attributes_t & operation_attributes, const tensor_args_t & tensor_args) {
+    std::cout << "MulMatDeviceOperation::compute_output_specs" << std::endl;
     const auto & a = tensor_args.a;
     const auto & b = tensor_args.b;
     ttnn::Shape output_shape({
@@ -117,6 +121,7 @@ MulMatDeviceOperation::ProgramFactory::cached_program_t MulMatDeviceOperation::P
     const operation_attributes_t & operation_attributes,
     const tensor_args_t & tensor_args,
     tensor_return_value_t & output_tensors) {
+    std::cout << "MulMatDeviceOperation::ProgramFactory::create()" << std::endl;
     tt::tt_metal::Program program{};
     const auto & a_tensor = tensor_args.a;
     const auto & b_tensor = tensor_args.b;

@@ -68,38 +68,24 @@ struct RoPEDeviceOperation {
 
 ttnn::Tensor ttggml::RoPEOperation::invoke(const Tensor& src_tensor, const Tensor& index_tensor, uint32_t active_dim_size, ttggml::RoPEType rope_type, uint32_t n_ctx_orig, float freq_base,
     float freq_scale, float ext_factor, float attn_factor, float beta_fast, float beta_slow) {
-    return ttnn::device_operation::launch<RoPEDeviceOperation>(
-        RoPEDeviceOperation{
-            src_tensor.memory_config(),
-            active_dim_size,
-            n_ctx_orig,
-            rope_type,
-            freq_base,
-            freq_scale,
-            ext_factor,
-            attn_factor,
-            beta_fast,
-            beta_slow
-        },
-        RoPEDeviceOperation::tensor_args_t{src_tensor, index_tensor, std::nullopt})[0];
+    std::cout << "RoPEOperation::invoke (1)" << std::endl;
+    auto tensor = ttnn::device_operation::launch<RoPEDeviceOperation>(
+        RoPEDeviceOperation{ src_tensor.memory_config(), active_dim_size, n_ctx_orig, rope_type, freq_base, freq_scale,
+                             ext_factor, attn_factor, beta_fast, beta_slow },
+        RoPEDeviceOperation::tensor_args_t{ src_tensor, index_tensor, std::nullopt })[0];
+    std::cout << "RoPEOperation::invoke (1) done" << std::endl;
+    return tensor;
 }
 
 ttnn::Tensor ttggml::RoPEOperation::invoke(const Tensor& src_tensor, const Tensor& index_tensor, const Tensor& freq_factor, uint32_t active_dim_size, ttggml::RoPEType rope_type, uint32_t n_ctx_orig, float freq_base,
     float freq_scale, float ext_factor, float attn_factor, float beta_fast, float beta_slow) {
-    return ttnn::device_operation::launch<RoPEDeviceOperation>(
-        RoPEDeviceOperation{
-            src_tensor.memory_config(),
-            active_dim_size,
-            n_ctx_orig,
-            rope_type,
-            freq_base,
-            freq_scale,
-            ext_factor,
-            attn_factor,
-            beta_fast,
-            beta_slow
-        },
-        RoPEDeviceOperation::tensor_args_t{src_tensor, index_tensor, freq_factor})[0];
+    std::cout << "RoPEOperation::invoke (2)" << std::endl;
+    auto tensor = ttnn::device_operation::launch<RoPEDeviceOperation>(
+        RoPEDeviceOperation{ src_tensor.memory_config(), active_dim_size, n_ctx_orig, rope_type, freq_base, freq_scale,
+                             ext_factor, attn_factor, beta_fast, beta_slow },
+        RoPEDeviceOperation::tensor_args_t{ src_tensor, index_tensor, freq_factor })[0];
+    std::cout << "RoPEOperation::invoke (2) done" << std::endl;
+    return tensor;
 }
 
 
@@ -171,6 +157,7 @@ RoPEDeviceOperation::ProgramFactory::cached_program_t RoPEDeviceOperation::Progr
     const tensor_args_t & tensor_args,
     tensor_return_value_t & output_tensors)
 {
+    std::cout << "RoPEDeviceOperation::ProgramFactory::create()" << std::endl;
     tt::tt_metal::Program program{};
     const auto& src_tensor = tensor_args.src_tensor;
     const auto& index_tensor = tensor_args.index_tensor;

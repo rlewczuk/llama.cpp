@@ -12,6 +12,12 @@
 #ifdef TRISC_MATH
 using namespace sfpi;
 
+sfpi_inline sfpi::vInt float_to_int32_compat(sfpi::vFloat z) {
+    const sfpi::vFloat c231 = sfpi::vFloat(0x4B400000);
+    sfpi::vFloat tmp = z + c231;
+    return sfpi::reinterpret<sfpi::vInt>(tmp) - sfpi::reinterpret<sfpi::vInt>(c231);
+}
+
 // Implemented algorithm exp_f24 from https://ieeexplore.ieee.org/document/9810030
 inline vFloat vector_exp(sfpi::vFloat val) {
     sfpi::vFloat y = 0.0f;
@@ -22,7 +28,7 @@ inline vFloat vector_exp(sfpi::vFloat val) {
         // z = (bias + x * factor * N_m; where:
         // factor = 0x00b8aa3b (computed through log(e))
         // bias = 0x3f800000
-        sfpi::vInt z = sfpu::_float_to_int32_(val * sfpi::vFloat(0x00b8aa3b) + sfpi::vFloat(0x3f800000));
+        sfpi::vInt z = float_to_int32_compat(val * sfpi::vFloat(0x00b8aa3b) + sfpi::vFloat(0x3f800000));
         sfpi::vInt zii = exexp(sfpi::reinterpret<sfpi::vFloat>(z));         // Extract exponent
         sfpi::vInt zif = sfpi::exman9(sfpi::reinterpret<sfpi::vFloat>(z));  // Extract mantissa
 
@@ -63,7 +69,7 @@ inline vFloat vector_exp(sfpi::vFloat val) {
         sfpi::vFloat d2 = sfpi::int32_to_float(sfpi::vInt(POLY_D2) + zif, 0);
         sfpi::vFloat d3 = sfpi::int32_to_float(sfpi::vInt(POLY_D3) + zif, 0);
         d2 = d1 * d2;
-        zif = sfpu::_float_to_int32_(d2 * d3);
+        zif = float_to_int32_compat(d2 * d3);
 
         // Restore exponent
         zii = sfpi::reinterpret<sfpi::vInt>(
@@ -81,7 +87,8 @@ inline vFloat vector_sin_phase(vFloat x)
     vInt whole_v = float_to_int16(v, 0);
     v -= int32_to_float(whole_v, 0);
 
-    v = ckernel::sfpu::sfpu_sinpi<false>(v);
+-    v *= 3.141592653589793f;
+    v = ckernel::sfpu::_sfpu_sine_maclaurin_series_<false>(v);
     v_if(whole_v & 1) { v = -v; }
     v_endif;
     return v;
@@ -159,8 +166,7 @@ inline void rope_face(int pos, int D, int vec_offset, int face)
 inline void rope_tile(int pos, int D, int vec_offset)
 {
 
-    math::set_dst_write_addr<DstTileLayout::Default, DstTileShape::Tile32x32>(0);
-    math::set_addr_mod_base();
+    math::set_dst_write_addr<DstTileShape::Tile32x32, DestReg>(0);
     TTI_STALLWAIT(p_stall::STALL_SFPU, p_stall::MATH);
 
     #ifdef HAS_FREQ_FACTOR
@@ -228,7 +234,6 @@ inline void rope_tile(int pos, int D, int vec_offset)
 
     math::clear_dst_reg_addr();
     TTI_STALLWAIT(p_stall::STALL_CFG, p_stall::WAIT_SFPU);
-    math::clear_addr_mod_base();
 }
 
 inline void rope_tile_init(float inv_d)
@@ -258,10 +263,7 @@ void kernel_main() {
     float inv_d = 1.f/(n_tiles_width_active * 32);
     MATH(rope_tile_init(inv_d));
 
-    int* idxs_ptr = nullptr;
     cb_wait_front(cb_in1, 1);
-    cb_get_tile(cb_in1, 0, &idxs_ptr);
-    idxs_ptr += 4; // Need to shift because read ptr is off by 1 << 4 bytes in BBE
 
     #ifdef HAS_FREQ_FACTOR
     uint32_t last_ff_idx = -1;
@@ -293,11 +295,11 @@ void kernel_main() {
 
         copy_tile_init(cb_in0);
         copy_tile(cb_in0, 0, 0);
-        MATH(rope_tile(idxs_ptr[b], inv_d, w*32));
+          MATH(rope_tile(read_tile_value(cb_in1, 0, b + 4), inv_d, w*32));
         tile_regs_commit();
         tile_regs_wait();
 
-        cb_reserve_back(cb_out0, 2);
+        cb_reserve_back(cb_out0, 1);
         pack_tile(0, cb_out0, 0);
         tile_regs_release();
         cb_push_back(cb_out0, 1);

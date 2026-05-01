@@ -157,3 +157,6 @@ a.out.*
 
 AGENTS.local.md
 .pi/SYSTEM.md
+
+generated/
+_*.sh

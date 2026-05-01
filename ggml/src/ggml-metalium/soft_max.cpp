@@ -67,23 +67,21 @@ struct SoftMaxDeviceOperation {
 };
 
 ttnn::Tensor ttggml::SoftMaxOperation::invoke(const Tensor& a, float scale) {
-    return ttnn::device_operation::launch<SoftMaxDeviceOperation>(
-        SoftMaxDeviceOperation{
-            a.memory_config(),
-            a.dtype(),
-            scale
-        },
-        SoftMaxDeviceOperation::tensor_args_t{a, std::nullopt})[0];
+    std::cout << "SoftMaxOperation::invoke (1)" << std::endl;
+    auto tensor = ttnn::device_operation::launch<SoftMaxDeviceOperation>(
+        SoftMaxDeviceOperation{ a.memory_config(), a.dtype(), scale },
+        SoftMaxDeviceOperation::tensor_args_t{ a, std::nullopt })[0];
+    std::cout << "SoftMaxOperation::invoke (1) done" << std::endl;
+    return tensor;
 }
 
 ttnn::Tensor ttggml::SoftMaxOperation::invoke(const Tensor& a, const Tensor& mask, float scale) {
-    return ttnn::device_operation::launch<SoftMaxDeviceOperation>(
-        SoftMaxDeviceOperation{
-            a.memory_config(),
-            a.dtype(),
-            scale
-        },
-        SoftMaxDeviceOperation::tensor_args_t{a, mask})[0];
+    std::cout << "SoftMaxOperation::invoke (2)" << std::endl;
+    auto tensor = ttnn::device_operation::launch<SoftMaxDeviceOperation>(
+        SoftMaxDeviceOperation{ a.memory_config(), a.dtype(), scale },
+        SoftMaxDeviceOperation::tensor_args_t{ a, mask })[0];
+    std::cout << "SoftMaxOperation::invoke (2) done" << std::endl;
+    return tensor;
 }
 
 std::vector<ttnn::TensorSpec> SoftMaxDeviceOperation::compute_output_specs(
@@ -129,6 +127,7 @@ SoftMaxDeviceOperation::ProgramFactory::cached_program_t SoftMaxDeviceOperation:
     const tensor_args_t & tensor_args,
     tensor_return_value_t & output_tensors)
 {
+    std::cout << "SoftMaxDeviceOperation::ProgramFactory::create()" << std::endl;
     tt::tt_metal::Program program{};
     const auto& a_tensor = tensor_args.a;
     const auto& o_tensor = output_tensors.at(0);

@@ -231,7 +231,7 @@ void kernel_main() {
     }
 
     // Create mask tiles for different edge cases
-    #if NEED_TILE_MASK
+    #ifdef NEED_TILE_MASK
     {
         tile_regs_acquire();
         cb_reserve_back(cb_tile_mask, 4);

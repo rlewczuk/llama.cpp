@@ -30,24 +30,17 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
-#include <cstdlib>
-#include <cstring>
 #include <iostream>
 #include <mutex>
 #include <optional>
 #include <string_view>
-#include <ttnn/core.hpp>
 #include <ttnn/device.hpp>
-#include <ttnn/operations/eltwise/binary/binary.hpp>
 #include <ttnn/operations/data_movement/tilize_with_val_padding/tilize_with_val_padding.hpp>
 #include <ttnn/operations/matmul/matmul.hpp>
-#include <ttnn/operations/moreh/moreh_matmul/moreh_matmul.hpp>
 #include <ttnn/operations/kv_cache/kv_cache.hpp>
 #include <ttnn/operations/data_movement/slice/slice.hpp>
 #include <ttnn/operations/normalization/layernorm/layernorm.hpp>
 #include <ttnn/operations/normalization/rmsnorm/rmsnorm.hpp>
-#include <ttnn/operations/data_movement/untilize/untilize.hpp>
-#include <ttnn/operations/experimental/transformer/nlp_kv_cache_load_slice/nlp_kv_cache_load_slice.hpp>
 #include <ttnn/operations/creation/creation.hpp>
 #include <ttnn/operations/eltwise/unary/unary_composite.hpp>
 #include <ttnn/operations/data_movement/transpose/transpose.hpp>
@@ -60,7 +53,7 @@
 #include <ttnn/operations/reduction/generic/generic_reductions.hpp>
 #include <ttnn/cpp/ttnn/operations/data_movement/gather/tosa/gather_tosa.hpp>
 #include <ttnn/cpp/ttnn/operations/data_movement/scatter/tosa_scatter.hpp>
-#include <ttnn/cpp/ttnn/operations/transformer/sdpa_decode/sdpa_decode.hpp>
+#include <ttnn/operations/transformer/sdpa_decode/sdpa_decode.hpp>
 
 
 #include <memory>
