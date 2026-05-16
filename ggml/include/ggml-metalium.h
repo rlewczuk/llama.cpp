@@ -1,6 +1,5 @@
 #pragma once
 
-#include "ggml.h"
 #include "ggml-backend.h"
 
 // GGML backend for using Tenstorrent's tt-Metalium and TTNN libraries

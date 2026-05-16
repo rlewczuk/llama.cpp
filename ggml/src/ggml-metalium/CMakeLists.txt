@@ -4,6 +4,10 @@ message(STATUS "Metalium/TTNN found.")
 
 ggml_add_backend_library(ggml-metalium
     ggml-metalium.cpp
+    ggml-metalium-context.cpp
+    ggml-metalium-device.cpp
+    ggml-metalium-ops.cpp
+    ggml-metalium-util.cpp
 )
 
 target_include_directories(ggml-metalium PRIVATE

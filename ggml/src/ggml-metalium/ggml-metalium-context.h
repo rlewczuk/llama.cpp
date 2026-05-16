@@ -1,0 +1,74 @@
+#pragma once
+
+#include "ggml-backend-impl.h"
+#include "ggml-backend.h"
+#include "ggml.h"
+
+#include "ttnn/device.hpp"
+#include "ttnn/tensor/tensor.hpp"
+#include "ttnn/operations/core/compute_kernel/compute_kernel_config.hpp"
+#include "umd/device/types/arch.hpp"
+
+#include <memory>
+#include <string>
+#include <vector>
+
+struct ggml_backend_metalium_context {
+    ttnn::IDevice* device = nullptr;
+    int device_id = 0;
+    std::string name;
+};
+
+struct ggml_backend_metalium_device_context {
+    std::shared_ptr<ttnn::MeshDevice> device = nullptr;
+    int device_id = -1;
+    std::string name;
+    std::string description;
+};
+
+struct ggml_backend_metalium_reg_context {
+    std::vector<ggml_backend_dev_t> devices;
+};
+
+struct TensorWithMetadata;
+
+struct ggml_backend_metalium_buffer_context {
+    size_t ggml_buffer_size_bytes = 0;
+    std::string name;
+    std::shared_ptr<ttnn::MeshDevice> device = nullptr;
+    size_t base_offset = 0;
+
+    // Tracking our own allocations because Metalium limitations and GGML assuming them
+    std::vector<std::unique_ptr<TensorWithMetadata>> metadata_to_free;
+};
+
+struct TensorWithMetadata {
+    std::shared_ptr<tt::tt_metal::Tensor> tensor;
+    ggml_type ggtype = GGML_TYPE_COUNT;
+    ggml_backend_metalium_buffer_context* bufctx = nullptr;
+};
+
+struct ggml_backend_metalium_buffer_type_context {
+    std::shared_ptr<ttnn::MeshDevice> device = nullptr;
+    std::string name;
+};
+
+struct ggml_backend_metalium_debug_flags {
+    bool print_rejected_ops = false;
+    bool print_view = false;
+    bool cache_mm_transpose = false;
+    bool disable_program_cache = false;
+};
+
+extern const ggml_backend_metalium_debug_flags ggml_metalium_debug_flags;
+
+ttnn::DeviceComputeKernelConfig ggml_metalium_make_compute_kernel_config(ttnn::IDevice* device);
+tt::tt_metal::DataType ggml_metalium_ggml2tt_type(ggml_type ggtype, tt::ARCH arch);
+bool ggml_metalium_is_ggml_type_supported(ggml_type ggtype, tt::ARCH arch);
+bool ggml_metalium_numpy_broadcast_rule(const ggml_tensor* t, const ggml_tensor* q);
+bool ggml_metalium_is_view(const ggml_tensor* tensor);
+tt::tt_metal::Tensor ggml_metalium_reshape_tt_tensor_into_ggml(const tt::tt_metal::Tensor& tensor, const struct ggml_tensor * node);
+std::shared_ptr<tt::tt_metal::Tensor> ggml_metalium_realize_ggml_view(const ggml_tensor* tensor);
+
+const char * ggml_backend_metalium_buffer_type_name(ggml_backend_buffer_type_t buft);
+ggml_backend_buffer_type_t ggml_backend_metalium_buffer_type(ggml_backend_dev_t dev, ggml_backend_metalium_device_context* dev_ctx);
