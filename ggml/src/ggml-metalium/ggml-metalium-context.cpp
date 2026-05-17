@@ -58,6 +58,20 @@
 #include <ttnn/operations/data_movement/reshape_view/reshape.hpp>
 #include <ttnn/operations/reduction/generic/generic_reductions.hpp>
 
+ttnn::MeshDevice * ggml_metalium_get_device(ggml_backend_metalium_device_context * dev_ctx)
+{
+    if (dev_ctx->device == nullptr) {
+        int device_id = dev_ctx->device_id;
+        GGML_ASSERT(device_id >= 0 && (size_t)device_id < tt::tt_metal::GetNumAvailableDevices());
+
+        dev_ctx->device = ttnn::open_mesh_device(device_id);
+        if (dev_ctx->device == nullptr) {
+            GGML_ABORT("failed to open Metalium mesh device %d", device_id);
+        }
+    }
+    return dev_ctx->device.get();
+}
+
 ttnn::DeviceComputeKernelConfig ggml_metalium_make_compute_kernel_config(ttnn::MeshDevice* device)
 {
     ttnn::DeviceComputeKernelConfig cfg;
@@ -669,7 +683,8 @@ static size_t ggml_backend_metalium_buffer_type_get_alignment(ggml_backend_buffe
 //       and GGML tensors does not specify the data type during tensor creation.
 static size_t ggml_backend_metalium_buffer_type_get_max_size(ggml_backend_buffer_type_t buft) {
     ggml_backend_metalium_buffer_type_context * ctx = (ggml_backend_metalium_buffer_type_context *)buft->context;
-    return ctx->device->num_dram_channels() * (size_t)ctx->device->dram_size_per_channel();
+    auto device = ggml_metalium_get_device(ctx->device_ctx);
+    return device->num_dram_channels() * (size_t)device->dram_size_per_channel();
 }
 
 static size_t ggml_backend_metalium_buffer_type_get_alloc_size(ggml_backend_buffer_type_t buft, const ggml_tensor * tensor) {
@@ -979,13 +994,15 @@ ggml_backend_metalium_buffer_type_alloc_buffer(ggml_backend_buffer_type_t buft,
                                            size_t size) {
     ggml_backend_metalium_buffer_type_context * buft_ctx = (ggml_backend_metalium_buffer_type_context *)buft->context;
 
+    ggml_metalium_get_device(buft_ctx->device_ctx);
+
     // FIXME: GGML unit tests fails if I don't add some additional memory to the buffer beyond the requested size
     size_t alloc_size = size + 4096 * 1024;
     // real allocation is deferred until the first tensor is set because we don't know the underlying tensor type yet
     ggml_backend_metalium_buffer_context* ctx = new ggml_backend_metalium_buffer_context {
         .ggml_buffer_size_bytes = size,
         .name = buft_ctx->name,
-        .device = buft_ctx->device,
+        .device = buft_ctx->device_ctx->device,
         .base_offset = g_metalium_base_offset,
 
         .metadata_to_free = {}
@@ -1025,7 +1042,7 @@ ggml_backend_buffer_type_t ggml_backend_metalium_buffer_type(ggml_backend_dev_t 
 
     auto bufctx = std::make_unique<ggml_backend_metalium_buffer_type_context>(
         ggml_backend_metalium_buffer_type_context{
-            .device = dev_ctx->device,
+            .device_ctx = dev_ctx,
             .name = "Metalium " + std::to_string(device_id),
         });
     auto* bufctx_ptr = bufctx.get();

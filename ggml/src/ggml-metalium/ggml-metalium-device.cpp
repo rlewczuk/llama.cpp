@@ -50,6 +50,11 @@ static const char * ggml_backend_metalium_name(ggml_backend_t backend) {
 
 static void ggml_backend_metalium_free(ggml_backend_t backend) {
     ggml_backend_metalium_context * ctx = (ggml_backend_metalium_context *)backend->context;
+    if (ctx != nullptr && ctx->dev_ctx != nullptr && ctx->dev_ctx->device != nullptr) {
+        ctx->transposed_weights.clear();
+        ttnn::distributed::close_mesh_device(ctx->dev_ctx->device);
+        ctx->dev_ctx->device.reset();
+    }
     delete ctx;
     delete backend;
 }
@@ -81,7 +86,7 @@ static bool ggml_backend_metalium_device_supports_op_internal(ggml_backend_dev_t
     // The metalium backend has seperated internal data types from the GGML data types. We really only care about
     // what we can convert to and from.
     auto tensor_supported = [&](const struct ggml_tensor * tensor) {
-        if(tensor == NULL || !ggml_metalium_is_ggml_type_supported(tensor->type, ctx->device->arch())) {
+        if(tensor == NULL || !ggml_metalium_is_ggml_type_supported(tensor->type, ctx->arch)) {
             return false;
         }
         // TTNN requires the tensor to be 4-byte aligned and all quantized tensors must be a multiple of 32
@@ -93,7 +98,7 @@ static bool ggml_backend_metalium_device_supports_op_internal(ggml_backend_dev_t
             return true;
         }
 
-        tt::tt_metal::DataType tt_type = ggml_metalium_ggml2tt_type(tensor->type, ctx->device->arch());
+        tt::tt_metal::DataType tt_type = ggml_metalium_ggml2tt_type(tensor->type, ctx->arch);
         switch(tt_type) {
             case tt::tt_metal::DataType::BFLOAT16:
             case tt::tt_metal::DataType::UINT16:
@@ -207,9 +212,7 @@ static bool ggml_backend_metalium_device_supports_buft(ggml_backend_dev_t dev, g
     if (buft->iface.get_name != ggml_backend_metalium_buffer_type_name) {
         return false;
     }
-    ggml_backend_metalium_buffer_type_context * buft_ctx = (ggml_backend_metalium_buffer_type_context *)buft->context;
-    ggml_backend_metalium_device_context * ctx = (ggml_backend_metalium_device_context *)dev->context;
-    return buft_ctx->device == ctx->device;
+    return buft->device == dev;
 }
 
 static void ggml_backend_metalium_synchronize(ggml_backend_t backend)
@@ -244,12 +247,19 @@ static ggml_guid_t ggml_backend_metalium_guid(void) {
 
 static ggml_backend_t ggml_backend_metalium_init(ggml_backend_metalium_device_context* dev_ctx) {
     int device_id = dev_ctx->device_id;
-    ttnn::MeshDevice* device = dev_ctx->device.get();
     GGML_ASSERT(device_id >= 0 && (size_t)device_id < tt::tt_metal::GetNumAvailableDevices());
-    GGML_ASSERT(device != nullptr);
+
+    ttnn::MeshDevice * device = ggml_metalium_get_device(dev_ctx);
+    if(!ggml_metalium_debug_flags.disable_program_cache) {
+        ttnn::enable_program_cache(*device);
+    }
+    // Limit device support to the ones I own (GS is removed as TTNN dropped support)
+    GGML_ASSERT(device->arch() == tt::ARCH::WORMHOLE_B0 || device->arch() == tt::ARCH::BLACKHOLE);
+    dev_ctx->arch = device->arch();
 
     ggml_backend_metalium_context * ctx = new ggml_backend_metalium_context {
-        /* device            = */ device,
+        /* dev_ctx           = */ dev_ctx,
+        /* transposed_weights= */ {},
         /* device_id         = */ device_id,
         /* name              = */ dev_ctx->name,
     };
@@ -302,12 +312,11 @@ static const char * ggml_backend_metalium_device_get_description(ggml_backend_de
 
 static void ggml_backend_metalium_get_memory(ggml_backend_dev_t dev, size_t * total, size_t * free) {
     GGML_UNUSED(dev);
-    ggml_backend_metalium_device_context * ctx = (ggml_backend_metalium_device_context *)dev->context;
-    size_t num_dram_channels = ctx->device->num_dram_channels();
-    auto stats = ctx->device->allocator()->get_statistics(tt::tt_metal::BufferType::DRAM);
-
-    *total = stats.total_allocatable_size_bytes * num_dram_channels;
-    *free = stats.total_free_bytes * num_dram_channels;
+    // The registry intentionally does not keep a MeshDevice open. Avoid opening
+    // one just for property queries, because static device ownership can run
+    // MeshDevice destruction after TT-Metal/UMD shutdown.
+    *total = 0;
+    *free = 0;
 }
 
 static enum ggml_backend_dev_type ggml_backend_metalium_get_type(ggml_backend_dev_t dev) {
@@ -398,25 +407,14 @@ GGML_BACKEND_API ggml_backend_reg_t ggml_backend_metalium_reg()
         // TODO: Support multiple devices (TT supports mesh configuration so it's going to be tricky)
         // but for now we just work on 1 device at a time
         static std::unique_ptr<ggml_backend_metalium_reg_context> ctx = std::make_unique<ggml_backend_metalium_reg_context>();
-        // TODO: Opening all device is the easiest way to get things initialized
-        // but TTNN devices are mutually exclusive so we will need to lazy initialize them
-        // in the future to allow multiple processes to use the same device
-        // FIXME: TTNN doesn't support opening multiple devices at the same time yet.. What?
+        // TODO: Register multiple mesh devices when non-owning TT discovery is available.
         const size_t num_devices = 1;//tt::tt_metal::GetNumAvailableDevices();
         ctx->devices.reserve(num_devices);
         for(size_t device_id = 0; device_id < num_devices; device_id++) {
             ggml_backend_metalium_device_context * dev_ctx = new ggml_backend_metalium_device_context;
-            auto device = ttnn::open_mesh_device(device_id);
-            if(!ggml_metalium_debug_flags.disable_program_cache) {
-                ttnn::enable_program_cache(*device);
-            }
-            // Limit device support to the ones I own (GS is removed as TTNN dropped support)
-            GGML_ASSERT(device->arch() == tt::ARCH::WORMHOLE_B0 || device->arch() == tt::ARCH::BLACKHOLE);
-
-            dev_ctx->device = device;
             dev_ctx->device_id = device_id;
             dev_ctx->name = "METALIUM" + std::to_string(device_id);
-            dev_ctx->description = identify_tensotrrent_device(device.get()) + " [Remote]";
+            dev_ctx->description = "Tenstorrent Metalium device";
 
             ggml_backend_dev_t dev = new ggml_backend_device {
                 .iface = ggml_backend_metalium_device_interface,

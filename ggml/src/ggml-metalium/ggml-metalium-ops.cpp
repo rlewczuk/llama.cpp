@@ -139,11 +139,10 @@ static void ggml_backend_metalium_mul_mat(ggml_backend_metalium_context * ctx, s
     else {
         tt::tt_metal::Tensor aT;
         if(src0->buffer->usage == GGML_BACKEND_BUFFER_USAGE_WEIGHTS && ggml_metalium_debug_flags.cache_mm_transpose) {
-            static std::unordered_map<std::string, tt::tt_metal::Tensor> transposed_weights;
-            auto it = transposed_weights.find(src0->name);
-            if(it == transposed_weights.end()) {
+            auto it = ctx->transposed_weights.find(src0->name);
+            if(it == ctx->transposed_weights.end()) {
                 aT = ttnn::transpose(a, -2, -1);
-                transposed_weights[src0->name] = aT;
+                ctx->transposed_weights[src0->name] = aT;
             }
             else {
                 aT = it->second;

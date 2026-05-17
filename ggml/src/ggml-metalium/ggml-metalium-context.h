@@ -9,19 +9,22 @@
 
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
-
-struct ggml_backend_metalium_context {
-    ttnn::MeshDevice* device = nullptr;
-    int device_id = 0;
-    std::string name;
-};
 
 struct ggml_backend_metalium_device_context {
     std::shared_ptr<ttnn::MeshDevice> device = nullptr;
     int device_id = -1;
     std::string name;
     std::string description;
+    tt::ARCH arch = tt::ARCH::BLACKHOLE;
+};
+
+struct ggml_backend_metalium_context {
+    ggml_backend_metalium_device_context * dev_ctx = nullptr;
+    std::unordered_map<std::string, tt::tt_metal::Tensor> transposed_weights;
+    int device_id = 0;
+    std::string name;
 };
 
 struct ggml_backend_metalium_reg_context {
@@ -47,7 +50,7 @@ struct TensorWithMetadata {
 };
 
 struct ggml_backend_metalium_buffer_type_context {
-    std::shared_ptr<ttnn::MeshDevice> device = nullptr;
+    ggml_backend_metalium_device_context * device_ctx = nullptr;
     std::string name;
 };
 
@@ -60,6 +63,7 @@ struct ggml_backend_metalium_debug_flags {
 
 extern const ggml_backend_metalium_debug_flags ggml_metalium_debug_flags;
 
+ttnn::MeshDevice * ggml_metalium_get_device(ggml_backend_metalium_device_context * dev_ctx);
 ttnn::DeviceComputeKernelConfig ggml_metalium_make_compute_kernel_config(ttnn::MeshDevice* device);
 tt::tt_metal::DataType ggml_metalium_ggml2tt_type(ggml_type ggtype, tt::ARCH arch);
 bool ggml_metalium_is_ggml_type_supported(ggml_type ggtype, tt::ARCH arch);
