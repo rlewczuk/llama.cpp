@@ -1,10 +1,8 @@
 #pragma once
 
-#include "ggml-backend-impl.h"
 #include "ggml-backend.h"
 #include "ggml.h"
 
-#include "ttnn/device.hpp"
 #include "ttnn/tensor/tensor.hpp"
 #include "ttnn/operations/core/compute_kernel/compute_kernel_config.hpp"
 #include "umd/device/types/arch.hpp"
@@ -14,7 +12,7 @@
 #include <vector>
 
 struct ggml_backend_metalium_context {
-    ttnn::IDevice* device = nullptr;
+    ttnn::MeshDevice* device = nullptr;
     int device_id = 0;
     std::string name;
 };
@@ -62,7 +60,7 @@ struct ggml_backend_metalium_debug_flags {
 
 extern const ggml_backend_metalium_debug_flags ggml_metalium_debug_flags;
 
-ttnn::DeviceComputeKernelConfig ggml_metalium_make_compute_kernel_config(ttnn::IDevice* device);
+ttnn::DeviceComputeKernelConfig ggml_metalium_make_compute_kernel_config(ttnn::MeshDevice* device);
 tt::tt_metal::DataType ggml_metalium_ggml2tt_type(ggml_type ggtype, tt::ARCH arch);
 bool ggml_metalium_is_ggml_type_supported(ggml_type ggtype, tt::ARCH arch);
 bool ggml_metalium_numpy_broadcast_rule(const ggml_tensor* t, const ggml_tensor* q);

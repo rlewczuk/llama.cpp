@@ -58,7 +58,7 @@
 #include <ttnn/operations/data_movement/reshape_view/reshape.hpp>
 #include <ttnn/operations/reduction/generic/generic_reductions.hpp>
 
-ttnn::DeviceComputeKernelConfig ggml_metalium_make_compute_kernel_config(ttnn::IDevice* device)
+ttnn::DeviceComputeKernelConfig ggml_metalium_make_compute_kernel_config(ttnn::MeshDevice* device)
 {
     ttnn::DeviceComputeKernelConfig cfg;
     if (device->arch() == tt::ARCH::WORMHOLE_B0 || device->arch() == tt::ARCH::BLACKHOLE) {

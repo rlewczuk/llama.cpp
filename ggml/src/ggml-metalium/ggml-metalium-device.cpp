@@ -244,7 +244,7 @@ static ggml_guid_t ggml_backend_metalium_guid(void) {
 
 static ggml_backend_t ggml_backend_metalium_init(ggml_backend_metalium_device_context* dev_ctx) {
     int device_id = dev_ctx->device_id;
-    ttnn::IDevice* device = dev_ctx->device.get();
+    ttnn::MeshDevice* device = dev_ctx->device.get();
     GGML_ASSERT(device_id >= 0 && (size_t)device_id < tt::tt_metal::GetNumAvailableDevices());
     GGML_ASSERT(device != nullptr);
 
@@ -367,7 +367,7 @@ static const ggml_backend_device_i ggml_backend_metalium_device_interface = {
     /* .event_synchronize       = */ NULL,
 };
 
-static std::string identify_tensotrrent_device(const ttnn::IDevice* device)
+static std::string identify_tensotrrent_device(const ttnn::MeshDevice* device)
 {
     auto grid_size = device->compute_with_storage_grid_size();
     // TODO: Support mesh configurations
@@ -376,6 +376,9 @@ static std::string identify_tensotrrent_device(const ttnn::IDevice* device)
             return "Tenstorrent Wormhole n300";
         }
         return "Tenstorrent Wormhole n150";
+    }
+    if(device->arch() == tt::ARCH::BLACKHOLE) {
+        return "Tenstorrent Blackhole";
     }
 
     return "Unknown Tenstorrent device";
@@ -413,8 +416,7 @@ GGML_BACKEND_API ggml_backend_reg_t ggml_backend_metalium_reg()
             dev_ctx->device = device;
             dev_ctx->device_id = device_id;
             dev_ctx->name = "METALIUM" + std::to_string(device_id);
-            auto* d = device->get_device(0);
-            dev_ctx->description = identify_tensotrrent_device(d) + (d->is_mmio_capable() ? " [Local]" : " [Remote]");
+            dev_ctx->description = identify_tensotrrent_device(device.get()) + " [Remote]";
 
             ggml_backend_dev_t dev = new ggml_backend_device {
                 .iface = ggml_backend_metalium_device_interface,
