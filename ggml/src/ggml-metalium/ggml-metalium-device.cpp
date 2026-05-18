@@ -240,7 +240,7 @@ static struct ggml_backend_i metalium_backend_i = {
     /* .graph_optimize          = */ NULL,
 };
 
-static ggml_guid_t ggml_backend_metalium_guid(void) {
+ggml_guid_t ggml_backend_metalium_guid(void) {
     static ggml_guid guid = { 0x91, 0x69, 0xd5, 0x5f, 0x24, 0xe7, 0x44, 0x00, 0xb4, 0x2a, 0x73, 0x23, 0x48, 0xb0, 0x4e, 0xe7 };
     return &guid;
 }
@@ -273,10 +273,6 @@ static ggml_backend_t ggml_backend_metalium_init(ggml_backend_metalium_device_co
     return backend;
 }
 
-bool ggml_backend_is_metalium(ggml_backend_t backend) {
-    return backend != NULL && ggml_guid_matches(backend->guid, ggml_backend_metalium_guid());
-}
-
 static const char * ggml_backend_metaliium_reg_get_name(ggml_backend_reg_t reg) {
     GGML_UNUSED(reg);
     return "Metalium";
@@ -293,7 +289,7 @@ static ggml_backend_dev_t ggml_backend_metalium_reg_get_device(ggml_backend_reg_
     return ctx->devices[index];
 }
 
-static const ggml_backend_reg_i ggml_backend_metalium_reg_interface = {
+const ggml_backend_reg_i ggml_backend_metalium_reg_interface = {
     /* .get_name          = */ ggml_backend_metaliium_reg_get_name,
     /* .get_device_count  = */ ggml_backend_metalium_reg_get_device_count,
     /* .get_device        = */ ggml_backend_metalium_reg_get_device,
@@ -358,7 +354,7 @@ static ggml_backend_buffer_type_t ggml_backend_metalium_get_buffer_type(ggml_bac
     return ggml_backend_metalium_buffer_type(dev, ctx);
 }
 
-static const ggml_backend_device_i ggml_backend_metalium_device_interface = {
+const ggml_backend_device_i ggml_backend_metalium_device_interface = {
     /* .get_name                = */ ggml_backend_metalium_device_get_name,
     /* .get_description         = */ ggml_backend_metalium_device_get_description,
     /* .get_memory              = */ ggml_backend_metalium_get_memory,
@@ -393,44 +389,5 @@ static std::string identify_tensotrrent_device(const ttnn::MeshDevice* device)
     return "Unknown Tenstorrent device";
 }
 
-static std::vector<std::unique_ptr<ggml_backend_device>> g_backend_device_holder;
-static std::vector<std::unique_ptr<ggml_backend_metalium_device_context>> g_backend_device_context_holder;
-GGML_BACKEND_API ggml_backend_reg_t ggml_backend_metalium_reg()
-{
-    static ggml_backend_reg reg;
-    static std::once_flag once;
-    std::call_once(once, [&]() {
-        if(getenv("TT_METAL_HOME") == NULL) {
-            fmt::println(stderr, "The TT_METAL_HOME environment variables must be set to use the Metalium backend");
-            abort();
-        }
-        // TODO: Support multiple devices (TT supports mesh configuration so it's going to be tricky)
-        // but for now we just work on 1 device at a time
-        static std::unique_ptr<ggml_backend_metalium_reg_context> ctx = std::make_unique<ggml_backend_metalium_reg_context>();
-        // TODO: Register multiple mesh devices when non-owning TT discovery is available.
-        const size_t num_devices = 1;//tt::tt_metal::GetNumAvailableDevices();
-        ctx->devices.reserve(num_devices);
-        for(size_t device_id = 0; device_id < num_devices; device_id++) {
-            ggml_backend_metalium_device_context * dev_ctx = new ggml_backend_metalium_device_context;
-            dev_ctx->device_id = device_id;
-            dev_ctx->name = "METALIUM" + std::to_string(device_id);
-            dev_ctx->description = "Tenstorrent Metalium device";
-
-            ggml_backend_dev_t dev = new ggml_backend_device {
-                .iface = ggml_backend_metalium_device_interface,
-                .reg = &reg,
-                .context = dev_ctx
-            };
-            ctx->devices.push_back(dev);
-            g_backend_device_context_holder.push_back(std::unique_ptr<ggml_backend_metalium_device_context>(dev_ctx));
-            g_backend_device_holder.push_back(std::unique_ptr<ggml_backend_device>(dev));
-        }
-
-        reg = ggml_backend_reg {
-            /* .api_version = */ GGML_BACKEND_API_VERSION,
-            /* .interface   = */ ggml_backend_metalium_reg_interface,
-            /* .context     = */ ctx.get()
-        };
-    });
-    return &reg;
-}
+std::vector<std::unique_ptr<ggml_backend_device>> g_backend_device_holder;
+std::vector<std::unique_ptr<ggml_backend_metalium_device_context>> g_backend_device_context_holder;
