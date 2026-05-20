@@ -428,7 +428,7 @@ static void ggml_metalium_tensor_to_ggml(const tt::tt_metal::Tensor& tensor, voi
             for(size_t j = 0; j < nshape[2]; j++) {
                 // optimization: copy a row of memory at a time
                 const size_t src_idx = i * stride[1] + j * stride[2];
-                memcpy((SrcType*)intermid + i * dst_stride, buf + src_idx, sizeof(SrcType) * nshape[3]);
+                memcpy((SrcType*)intermid + (i * nshape[2] + j) * dst_stride, buf + src_idx, sizeof(SrcType) * nshape[3]);
             }
         }
     }

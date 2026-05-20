@@ -169,7 +169,11 @@ bool ggml_backend_metalium_can_cpy(const struct ggml_tensor * dst)
     if(dst->op != GGML_OP_CPY) {
         return true;
     }
+    ggml_tensor* src0 = dst->src[0];
     ggml_tensor* src1 = dst->src[1];
+    if((src0->type == GGML_TYPE_I32 || dst->type == GGML_TYPE_I32) && src0->type != dst->type) {
+        return false;
+    }
     return !(ggml_is_permuted(src1) || ggml_metalium_is_view(src1));
 }
 
@@ -186,8 +190,12 @@ static void ggml_backend_metalium_cpy(ggml_backend_metalium_context * ctx, struc
         res = std::make_shared<tt::tt_metal::Tensor>(ggml_metalium_reshape_tt_tensor_into_ggml(*res, dst));
     }
 
+    const auto dst_tt_type = ggml_metalium_ggml2tt_type(dst->type, res->device()->arch());
+    if(res->dtype() != dst_tt_type) {
+        res = std::make_shared<tt::tt_metal::Tensor>(ttnn::typecast(*res, dst_tt_type));
+    }
+
     *dst_meta = {
-        // TODO: Type cast to the appropriate type
         .tensor = res,
         .ggtype = dst->type,
         .bufctx = dst_meta->bufctx
