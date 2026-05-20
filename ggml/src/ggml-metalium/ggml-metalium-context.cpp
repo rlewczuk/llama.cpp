@@ -317,12 +317,13 @@ static tt::tt_metal::HostBuffer ggml_metalium_quantized_to_owned_storage(const v
 
 template <typename SrcType>
 static void ggml_metalium_tensor_to_ggml(const tt::tt_metal::Tensor& tensor, void* dst, ggml_type dst_ggtype) {
+    //std::cout << "RLE: dst_ggtype=" << dst_ggtype << ", tensor=" << tensor.dtype() << std::endl;
     // Converts TT tensors to GGML types
-    ttnn::Shape shape = tensor.logical_shape();
-    ttnn::Shape padded_shape = tensor.padded_shape();
     static_assert(std::is_same_v<SrcType, float> || std::is_same_v<SrcType, bfloat16> || std::is_same_v<SrcType, uint32_t>);
 
     tt::tt_metal::Tensor row_major_tensor = ttnn::untilize(tensor).cpu();
+    ttnn::Shape shape = row_major_tensor.logical_shape();
+    ttnn::Shape padded_shape = row_major_tensor.padded_shape();
     GGML_ASSERT(row_major_tensor.storage_type() == tt::tt_metal::StorageType::HOST);
     const tt::tt_metal::HostStorage& storage = row_major_tensor.host_storage();
     const auto buffer = storage.buffer().get_shard({0, 0}).value();
@@ -362,33 +363,27 @@ static void ggml_metalium_tensor_to_ggml(const tt::tt_metal::Tensor& tensor, voi
         if constexpr(std::is_same_v<SrcType, bfloat16>) {
             return static_cast<float>(src);
         }
-        else if (std::is_same_v<SrcType, float>) {
+        else if constexpr(std::is_same_v<SrcType, float>) {
             return src;
+        }
+        else if constexpr(std::is_same_v<SrcType, uint32_t>) {
+            return static_cast<float>(src);
         }
         GGML_UNREACHABLE();
     };
 
     // Tilize to ROW_MAJOR doesn't mean the tensor is contiguous. It still has the underlying 32x32 tiles
     // we need to view into the tensor to get the contiguous data
-    std::array<size_t, 4> stride = {1, 1, 1, 1};
-    if(padded_shape.size() == 4) {
-        stride = {padded_shape[1] * padded_shape[2] * padded_shape[3],
-                    padded_shape[2] * padded_shape[3],
-                    padded_shape[3],
-                    1};
+    std::array<size_t, 4> padded_nshape {1, 1, 1, 1};
+    for(size_t i = 0; i < padded_shape.size(); i++) {
+        padded_nshape[4 - padded_shape.size() + i] = padded_shape[i];
     }
-    else if(padded_shape.size() == 3) {
-        stride = {padded_shape[1] * padded_shape[2], padded_shape[2], 1, 1};
-    }
-    else if(padded_shape.size() == 2) {
-        stride = {padded_shape[1], 1, 1, 1};
-    }
-    else if(padded_shape.size() == 1) {
-        stride = {1, 1, 1, 1};
-    }
-    else {
-        GGML_ASSERT(false && "Unsupported tensor shape");
-    }
+    std::array<size_t, 4> stride = {
+        padded_nshape[1] * padded_nshape[2] * padded_nshape[3],
+        padded_nshape[2] * padded_nshape[3],
+        padded_nshape[3],
+        1
+    };
 
     std::array<size_t, 4> nshape {1, 1, 1, 1};
     for(size_t i = 0; i < shape.size(); i++) {
@@ -455,11 +450,49 @@ static void ggml_metalium_tensor_to_ggml(const tt::tt_metal::Tensor& tensor, voi
     }
 
     if (need_quantized_conversion) {
-        GGML_ASSERT((ggml_is_quantized(dst_ggtype) || dst_ggtype == GGML_TYPE_F16) && "This block should only reach for quantized data types or FP16");
-        GGML_ASSERT(intermid_buf.size() != 0);
-        const ggml_type_traits_cpu* trait = ggml_get_type_traits_cpu(dst_ggtype);
-        GGML_ASSERT(trait->from_float != NULL);
-        trait->from_float((float*)intermid, dst, shape.volume());
+        GGML_ASSERT(intermid != nullptr);
+        const float* intermid_f32 = (const float*)intermid;
+        const int64_t nelements = shape.volume();
+
+        switch (dst_ggtype) {
+            case GGML_TYPE_I8:
+                for (int64_t i = 0; i < nelements; i++) {
+                    ((int8_t*)dst)[i] = (int8_t)intermid_f32[i];
+                }
+                break;
+            case GGML_TYPE_I16:
+                for (int64_t i = 0; i < nelements; i++) {
+                    ((int16_t*)dst)[i] = (int16_t)intermid_f32[i];
+                }
+                break;
+            case GGML_TYPE_I32:
+                for (int64_t i = 0; i < nelements; i++) {
+                    ((int32_t*)dst)[i] = (int32_t)intermid_f32[i];
+                }
+                break;
+            case GGML_TYPE_I64:
+                for (int64_t i = 0; i < nelements; i++) {
+                    ((int64_t*)dst)[i] = (int64_t)intermid_f32[i];
+                }
+                break;
+            case GGML_TYPE_F64:
+                for (int64_t i = 0; i < nelements; i++) {
+                    ((double*)dst)[i] = (double)intermid_f32[i];
+                }
+                break;
+            case GGML_TYPE_BF16:
+                ggml_fp32_to_bf16_row(intermid_f32, (ggml_bf16_t*)dst, nelements);
+                break;
+            case GGML_TYPE_F16:
+            default:
+                GGML_ASSERT((ggml_is_quantized(dst_ggtype) || dst_ggtype == GGML_TYPE_F16) && "This block should only reach for quantized data types, FP16, BF16, or numeric conversions");
+                {
+                    const ggml_type_traits_cpu* trait = ggml_get_type_traits_cpu(dst_ggtype);
+                    GGML_ASSERT(trait->from_float != NULL);
+                    trait->from_float(intermid_f32, dst, nelements);
+                }
+                break;
+        }
     }
 }
 
@@ -644,6 +677,9 @@ static std::shared_ptr<tt::tt_metal::Tensor> ggml_metalium_realize_ggml_view_imp
         }
 
         auto res = ttnn::permute(*t, permute_tt);
+        if(!ggml_tt_tensors_shape_equal(tensor, res)) {
+            res = ggml_metalium_reshape_tt_tensor_into_ggml(res, tensor);
+        }
         return std::make_shared<tt::tt_metal::Tensor>(std::move(res));
     }
 
