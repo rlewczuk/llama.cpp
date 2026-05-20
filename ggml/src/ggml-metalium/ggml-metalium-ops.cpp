@@ -958,6 +958,73 @@ static void ggml_backend_metalium_glu(ggml_backend_metalium_context * ctx, struc
         case GGML_GLU_OP_SWIGLU:
             res = ttnn::multiply(a, ttnn::swish(b, ttnn::L1_MEMORY_CONFIG));
             break;
+        case GGML_GLU_OP_SWIGLU_OAI: {
+            const float alpha = ggml_get_op_params_f32(dst, 2);
+            const float limit = ggml_get_op_params_f32(dst, 3);
+            const auto mem_config = ttnn::L1_MEMORY_CONFIG;
+            const std::optional<ttnn::DataType> dtype = std::nullopt;
+            // Existing Metalium convention:
+            //   SWIGLU: a * swish(b)
+            // therefore:
+            //   b = x / activation branch
+            //   a = gate branch
+            // xi = min(x, limit)
+            auto xi = ttnn::minimum(
+                b,
+                limit,
+                dtype,
+                mem_config
+            );
+            // gi = clamp(gate, -limit, limit)
+            auto gi_hi = ttnn::minimum(
+                a,
+                limit,
+                dtype,
+                mem_config
+            );
+            auto gi = ttnn::maximum(
+                gi_hi,
+                -limit,
+                dtype,
+                mem_config
+            );
+
+            // alpha_xi = alpha * xi
+            auto alpha_xi = ttnn::multiply(
+                xi,
+                alpha,
+                dtype,
+                mem_config
+            );
+            // sigmoid(alpha * xi)
+            auto sig = ttnn::sigmoid(
+                alpha_xi,
+                static_cast<int>(ttnn::operations::unary::VecMode::RC),
+                ttnn::operations::unary::SigmoidMode::ACCURATE,
+                mem_config
+            );
+            // swish_alpha(xi) = xi * sigmoid(alpha * xi)
+            auto swish_alpha = ttnn::multiply(
+                xi,
+                sig,
+                dtype,
+                mem_config
+            );
+            // 1 + clamp(gate, -limit, limit)
+            auto gate_plus_one = ttnn::add(
+                gi,
+                1.0f,
+                dtype,
+                mem_config
+            );
+            res = ttnn::multiply(
+                swish_alpha,
+                gate_plus_one,
+                dtype,
+                mem_config
+            );
+            break;
+        }
         default:
             GGML_ASSERT(false && "Unsupported GLU operation");
     }
