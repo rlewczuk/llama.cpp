@@ -505,6 +505,39 @@ bool ggml_metalium_is_view(const ggml_tensor* tensor)
         tensor->op == GGML_OP_PERMUTE;
 }
 
+bool ggml_metalium_is_simple_unit_slice(const ggml_tensor* view)
+{
+    if(view == nullptr || view->op != GGML_OP_VIEW || view->view_src == nullptr) {
+        return false;
+    }
+
+    const ggml_tensor* src = view->view_src;
+
+    // TTNN slice(start, end, step=1) can only represent same-stride rectangular subviews.
+    for(int i = 0; i < GGML_MAX_DIMS; ++i) {
+        if(view->nb[i] != src->nb[i]) {
+            return false;
+        }
+    }
+
+    size_t remaining = view->view_offs;
+    for(int i = GGML_MAX_DIMS - 1; i >= 0; --i) {
+        const size_t stride = src->nb[i];
+        if(stride == 0) {
+            return false;
+        }
+
+        const int64_t start = remaining / stride;
+        remaining %= stride;
+
+        if(start + view->ne[i] > src->ne[i]) {
+            return false;
+        }
+    }
+
+    return remaining == 0;
+}
+
 tt::tt_metal::Tensor ggml_metalium_reshape_tt_tensor_into_ggml(const tt::tt_metal::Tensor& tensor, const struct ggml_tensor * node)
 {
     if(ggml_tt_tensors_shape_equal(node, tensor)) {

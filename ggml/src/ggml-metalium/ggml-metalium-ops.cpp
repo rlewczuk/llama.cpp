@@ -165,16 +165,28 @@ static void ggml_backend_metalium_mul_mat(ggml_backend_metalium_context * ctx, s
 
 bool ggml_backend_metalium_can_cpy(const struct ggml_tensor * dst)
 {
-    // Destination must not be a view
-    if(dst->op != GGML_OP_CPY) {
+    if(dst->op != GGML_OP_CPY && dst->op != GGML_OP_CONT && dst->op != GGML_OP_DUP) {
         return true;
     }
+
     ggml_tensor* src0 = dst->src[0];
     ggml_tensor* src1 = dst->src[1];
+    if(src0 == nullptr) {
+        return false;
+    }
     if((src0->type == GGML_TYPE_I32 || dst->type == GGML_TYPE_I32) && src0->type != dst->type) {
         return false;
     }
-    return !(ggml_is_permuted(src1) || ggml_metalium_is_view(src1));
+    if(src1 != nullptr && (ggml_is_permuted(src1) || ggml_metalium_is_view(src1))) {
+        return false;
+    }
+    if(ggml_metalium_is_view(src0) && !ggml_metalium_is_simple_unit_slice(src0)) {
+        // TODO: Defensive fallback to CPU for CONT/CPY/DUP from non-simple GGML views.
+        // Metalium view realization currently cannot safely materialize all GGML view
+        // layouts as TTNN slices; implement full strided/permuted view support and remove this fallback later.
+        return false;
+    }
+    return true;
 }
 
 static void ggml_backend_metalium_cpy(ggml_backend_metalium_context * ctx, struct ggml_tensor * dst) {
