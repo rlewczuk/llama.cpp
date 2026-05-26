@@ -130,7 +130,7 @@ static tt::tt_metal::DataType ggml_metalium_ggml2tt_type_internal(ggml_type ggty
     // This table is consulted to map GGML types to TT types dueing tensor creation
     if(arch == tt::ARCH::WORMHOLE_B0 || arch == tt::ARCH::BLACKHOLE) {
         static constexpr std::array<tt::tt_metal::DataType, GGML_TYPE_COUNT> table = {
-            /*GGML_TYPE_F32 = */ tt::tt_metal::DataType::BFLOAT16,
+            /*GGML_TYPE_F32 = */ tt::tt_metal::DataType::FLOAT32,
             /*GGML_TYPE_F16 = */ tt::tt_metal::DataType::BFLOAT16,
             /*GGML_TYPE_Q4_0 = */ tt::tt_metal::DataType::BFLOAT8_B,    // Using BFLOAT8_B for now as BFLOAT4_B is not accurate enough
             /*GGML_TYPE_Q4_1 = */ tt::tt_metal::DataType::BFLOAT8_B,    // Does work but causes issues in unit tests
@@ -785,7 +785,7 @@ static void ggml_backend_metalium_buffer_set_tensor(ggml_backend_buffer_t buffer
     // 2. Create a TT tensor from the flat buffer as ROW_MAJOR. Send it to the device and tile it
     // 3. If the data is quantized, cast down to BFLOAT8_B or BFLOAT4_B
     // There's a lot of things to do here.
-    // TODO: Currently FP32 is hard coded to convert to BFLOAT16. Use FP32 when the hardware supports it
+    // F32 is uploaded and tilized as FLOAT32 so element-wise operations preserve full precision.
     // TODO: Make a scalable way to decide which GGML type casts to TT quantized types
     // TODO: Use the simpler tilize() when the final 2 dimensions are both multiples of 32
     GGML_ASSERT(offset == 0);
@@ -807,9 +807,8 @@ static void ggml_backend_metalium_buffer_set_tensor(ggml_backend_buffer_t buffer
     std::optional<tt::tt_metal::HostBuffer> storage;
     tt::tt_metal::DataType intermidiate_type = tt::tt_metal::DataType::BFLOAT16;
     if(ggtype == GGML_TYPE_F32) {
-        // For now we cast F32 to BF16. Need a scalable way to handle this as WORMHOLD_B0 have native support for F32
-        // TODO: Enable proper FP32 when all related bugs gets fixed for devices that support it
-        storage = ggml_metalium_data_to_borrowed_storage<float, bfloat16>((const float*)data, size / sizeof(float));
+        storage = ggml_metalium_data_to_borrowed_storage<float, float>((const float*)data, size / sizeof(float));
+        intermidiate_type = tt::tt_metal::DataType::FLOAT32;
     }
     else if (ggtype == GGML_TYPE_F16) {
         // TT hardware claims to support FP16 but the API does not expose it. For now we use BF16 as it is close enough

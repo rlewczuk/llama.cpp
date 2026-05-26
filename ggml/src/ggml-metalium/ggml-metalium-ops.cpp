@@ -356,18 +356,19 @@ static void ggml_backend_metalium_bin_op(ggml_backend_metalium_context * ctx, st
     tt::tt_metal::Tensor b = flatten ? ggml_metalium_flatten_for_eltwise(*src_tensor1) : *src_tensor1;
 
     tt::tt_metal::Tensor ret;
+    const std::optional<const tt::tt_metal::DataType> dst_tt_type = ggml_metalium_ggml2tt_type(dst->type, a.device()->arch());
     switch(op) {
         case GGML_OP_ADD:
-            ret = ttnn::add(a, b);
+            ret = ttnn::add(a, b, dst_tt_type);
             break;
         case GGML_OP_MUL:
-            ret = ttnn::multiply(a, b);
+            ret = ttnn::multiply(a, b, dst_tt_type);
             break;
         case GGML_OP_SUB:
-            ret = ttnn::subtract(a, b);
+            ret = ttnn::subtract(a, b, dst_tt_type);
             break;
         case GGML_OP_DIV:
-            ret = ttnn::divide(a, b);
+            ret = ttnn::divide(a, b, dst_tt_type);
             break;
         default:
             GGML_ASSERT(false && "Unsupported binary operation");

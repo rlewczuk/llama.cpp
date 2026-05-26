@@ -201,10 +201,13 @@ static bool ggml_backend_metalium_device_supports_op_internal(ggml_backend_dev_t
         case GGML_OP_SIN:
         case GGML_OP_COS:
             return true;
-        case GGML_OP_ADD:
-            if(ggml_backend_metalium_should_skip_broken_add_shape(op)) {
-                return false;
-            }
+          case GGML_OP_ADD:
+              if(ggml_is_permuted(src1)) {
+                  return false;
+              }
+              if(ggml_backend_metalium_should_skip_broken_add_shape(op)) {
+                  return false;
+              }
             return tensor_supported(src1) && ggml_metalium_numpy_broadcast_rule(src0, src1);
         case GGML_OP_SUB:
         case GGML_OP_MUL:
