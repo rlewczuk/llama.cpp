@@ -85,9 +85,18 @@ static bool ggml_backend_metalium_should_skip_broken_add_shape(const ggml_tensor
     const ggml_tensor * src0 = op->src[0];
     const ggml_tensor * src1 = op->src[1];
     const int64_t height = op->ne[1] * op->ne[2] * op->ne[3];
-    return src0->type == GGML_TYPE_F16 && src1->type == GGML_TYPE_F16 &&
-        op->ne[0] == 1280 && op->ne[1] == 16 && op->ne[2] == 16 && op->ne[3] == 1 &&
-        height % 32 == 0;
+    const bool is_broken_shape =
+        op->ne[0] == 1280 && op->ne[1] == 16 && op->ne[2] == 16 && op->ne[3] == 1 && height % 32 == 0;
+    const bool is_broken_f16_shape =
+        src0->type == GGML_TYPE_F16 && src1->type == GGML_TYPE_F16 && is_broken_shape;
+    const bool is_target_broken_f32_shape =
+        src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_F32 && is_broken_shape &&
+        src0->ne[0] == 1280 && src0->ne[1] == 16 && src0->ne[2] == 16 && src0->ne[3] == 1 &&
+        src1->ne[0] == 1280 &&
+        ((src1->ne[1] == 1 && src1->ne[2] == 1 && src1->ne[3] == 1) ||
+         (src1->ne[1] == 16 && src1->ne[2] == 16 && src1->ne[3] == 1));
+
+    return is_broken_f16_shape || is_target_broken_f32_shape;
 }
 
 static bool ggml_backend_metalium_device_supports_op_internal(ggml_backend_dev_t device, const struct ggml_tensor * op) {
