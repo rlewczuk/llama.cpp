@@ -538,6 +538,11 @@ bool ggml_metalium_is_simple_unit_slice(const ggml_tensor* view)
     return remaining == 0;
 }
 
+static bool ggml_metalium_tt_tensor_shape_compatible(const ggml_tensor * ggtensor, const tt::tt_metal::Tensor & ttensor)
+{
+    return ggml_tt_tensors_shape_equal(ggtensor, ttensor);
+}
+
 tt::tt_metal::Tensor ggml_metalium_reshape_tt_tensor_into_ggml(const tt::tt_metal::Tensor& tensor, const struct ggml_tensor * node)
 {
     if(ggml_tt_tensors_shape_equal(node, tensor)) {
@@ -557,11 +562,11 @@ static std::shared_ptr<tt::tt_metal::Tensor> ggml_metalium_realize_ggml_view_imp
 std::shared_ptr<tt::tt_metal::Tensor> ggml_metalium_realize_ggml_view(const ggml_tensor* tensor)
 {
     auto res = ggml_metalium_realize_ggml_view_impl(tensor);
-    if(!ggml_tt_tensors_shape_equal(tensor, *res)) {
+    if(!ggml_metalium_tt_tensor_shape_compatible(tensor, *res)) {
         std::cout << "FATAL ERROR: Shape mismatch between TTNN and GGML after view op " << ggml_op_name(tensor->op) << "\n"
             << "  Result: " << res->logical_shape() << "\n"
             << "  GGML expecting: " << tensor->ne[3] << " " << tensor->ne[2] << " " << tensor->ne[1] << " " << tensor->ne[0] << "\n";
-        GGML_ASSERT(ggml_tt_tensors_shape_equal(tensor, *res));
+        GGML_ASSERT(ggml_metalium_tt_tensor_shape_compatible(tensor, *res));
     }
     return res;
 }
@@ -949,7 +954,10 @@ static void ggml_backend_metalium_buffer_get_tensor(ggml_backend_buffer_t buffer
     }
     else {
         t = ggml_metalium_realize_ggml_view(tensor);
-        GGML_ASSERT(ggml_tt_tensors_shape_equal(tensor, *t));
+        GGML_ASSERT(ggml_metalium_tt_tensor_shape_compatible(tensor, *t));
+    }
+    if(!ggml_metalium_tt_tensor_shape_compatible(tensor, *t)) {
+        t = std::make_shared<tt::tt_metal::Tensor>(ggml_metalium_reshape_tt_tensor_into_ggml(*t, tensor));
     }
     GGML_ASSERT(t->layout() == tt::tt_metal::Layout::TILE);
     if(t->dtype() != tt::tt_metal::DataType::BFLOAT16 && t->dtype() != tt::tt_metal::DataType::FLOAT32 && t->dtype() != tt::tt_metal::DataType::UINT32) {

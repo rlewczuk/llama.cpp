@@ -77,6 +77,19 @@ static bool ggml_backend_metalium_device_supports_op(ggml_backend_dev_t device, 
 }
 
 
+static bool ggml_backend_metalium_should_skip_broken_add_shape(const ggml_tensor * op) {
+    if(op->op != GGML_OP_ADD || op->src[0] == nullptr || op->src[1] == nullptr) {
+        return false;
+    }
+
+    const ggml_tensor * src0 = op->src[0];
+    const ggml_tensor * src1 = op->src[1];
+    const int64_t height = op->ne[1] * op->ne[2] * op->ne[3];
+    return src0->type == GGML_TYPE_F16 && src1->type == GGML_TYPE_F16 &&
+        op->ne[0] == 1280 && op->ne[1] == 16 && op->ne[2] == 16 && op->ne[3] == 1 &&
+        height % 32 == 0;
+}
+
 static bool ggml_backend_metalium_device_supports_op_internal(ggml_backend_dev_t device, const struct ggml_tensor * op) {
     GGML_ASSERT(op != NULL);
     const struct ggml_tensor * src0 = op->src[0];
@@ -180,6 +193,10 @@ static bool ggml_backend_metalium_device_supports_op_internal(ggml_backend_dev_t
         case GGML_OP_COS:
             return true;
         case GGML_OP_ADD:
+            if(ggml_backend_metalium_should_skip_broken_add_shape(op)) {
+                return false;
+            }
+            return tensor_supported(src1) && ggml_metalium_numpy_broadcast_rule(src0, src1);
         case GGML_OP_SUB:
         case GGML_OP_MUL:
             return tensor_supported(src1) && ggml_metalium_numpy_broadcast_rule(src0, src1);

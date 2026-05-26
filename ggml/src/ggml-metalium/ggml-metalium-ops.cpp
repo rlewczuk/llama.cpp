@@ -302,6 +302,37 @@ static void ggml_backend_metalium_leaky_relu(ggml_backend_metalium_context * ctx
         .bufctx = meta->bufctx
     };
 }
+static tt::tt_metal::Tensor ggml_metalium_flatten_for_eltwise(const tt::tt_metal::Tensor & tensor)
+{
+    const auto shape = tensor.logical_shape();
+    GGML_ASSERT(shape.size() == GGML_MAX_DIMS);
+
+    const uint32_t height = shape[0] * shape[1] * shape[2];
+    const uint32_t width = shape[3];
+    if(shape[0] == 1 && shape[1] == 1) {
+        return tensor;
+    }
+
+    return ttnn::reshape(tensor, ttnn::Shape({1, 1, height, width}));
+}
+
+static tt::tt_metal::Tensor ggml_metalium_reshape_for_eltwise_output(const tt::tt_metal::Tensor & tensor, const ggml_tensor * dst)
+{
+    return ggml_metalium_reshape_tt_tensor_into_ggml(tensor, dst);
+}
+
+static bool ggml_metalium_needs_eltwise_flatten(const ggml_tensor * t)
+{
+    const uint32_t width = t->ne[0];
+    const uint32_t height = t->ne[1] * t->ne[2] * t->ne[3];
+    return width % 32 == 0 && height % 32 == 0 && t->ne[1] < 32 && (t->ne[2] > 1 || t->ne[3] > 1);
+}
+
+static bool ggml_metalium_can_flatten_for_eltwise(const ggml_tensor * t)
+{
+    return !ggml_metalium_is_view(t) && ggml_is_contiguous(t);
+}
+
 static void ggml_backend_metalium_bin_op(ggml_backend_metalium_context * ctx, struct ggml_tensor * dst, ggml_op op) {
     GGML_METALIUM_OP_SANITY_CHECK(dst);
     GGML_METALIUM_OP_SRC0_SANITY_CHECK(dst);
@@ -316,25 +347,36 @@ static void ggml_backend_metalium_bin_op(ggml_backend_metalium_context * ctx, st
     auto src_tensor0 = ggml_metalium_realize_ggml_view(src0);
     auto src_tensor1 = ggml_metalium_realize_ggml_view(src1);
 
-    std::shared_ptr<tt::tt_metal::Tensor> ret;
+    const bool flatten = src0->type == GGML_TYPE_F16 && src1->type == GGML_TYPE_F16 && op == GGML_OP_ADD &&
+        ggml_metalium_needs_eltwise_flatten(dst) &&
+        ggml_metalium_can_flatten_for_eltwise(dst) &&
+        ggml_metalium_can_flatten_for_eltwise(src0) &&
+        ggml_metalium_can_flatten_for_eltwise(src1);
+    tt::tt_metal::Tensor a = flatten ? ggml_metalium_flatten_for_eltwise(*src_tensor0) : *src_tensor0;
+    tt::tt_metal::Tensor b = flatten ? ggml_metalium_flatten_for_eltwise(*src_tensor1) : *src_tensor1;
+
+    tt::tt_metal::Tensor ret;
     switch(op) {
         case GGML_OP_ADD:
-            ret = std::make_shared<tt::tt_metal::Tensor>(ttnn::add(*src_tensor0, *src_tensor1));
+            ret = ttnn::add(a, b);
             break;
         case GGML_OP_MUL:
-            ret = std::make_shared<tt::tt_metal::Tensor>(ttnn::multiply(*src_tensor0, *src_tensor1));
+            ret = ttnn::multiply(a, b);
             break;
         case GGML_OP_SUB:
-            ret = std::make_shared<tt::tt_metal::Tensor>(ttnn::subtract(*src_tensor0, *src_tensor1));
+            ret = ttnn::subtract(a, b);
             break;
         case GGML_OP_DIV:
-            ret = std::make_shared<tt::tt_metal::Tensor>(ttnn::divide(*src_tensor0, *src_tensor1));
+            ret = ttnn::divide(a, b);
             break;
         default:
             GGML_ASSERT(false && "Unsupported binary operation");
     }
+    if(flatten) {
+        ret = ggml_metalium_reshape_for_eltwise_output(ret, dst);
+    }
     *dst_meta = {
-        .tensor = std::move(ret),
+        .tensor = std::make_shared<tt::tt_metal::Tensor>(std::move(ret)),
         .ggtype = dst->type,
         .bufctx = meta0->bufctx
     };
