@@ -1148,6 +1148,10 @@ struct test_case {
         if (contains_f16 && strcmp(ggml_backend_reg_name(reg), "WebGPU") == 0) {
             return std::max(max_nmse_err(), 1e-6);
         }
+        // Tenstorrent devices use only bf16
+        if (contains_f16 && strcmp(ggml_backend_reg_name(reg), "Metalium") == 0) {
+            return std::max(max_nmse_err(), 1e-5);
+        }
         return max_nmse_err();
     }
 
