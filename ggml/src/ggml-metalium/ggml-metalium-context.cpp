@@ -422,7 +422,7 @@ static void ggml_metalium_tensor_to_ggml(const tt::tt_metal::Tensor& tensor, voi
     // If we can do row-by-row copy
     // Only avoid small copies via memcpy if not copying into FP32 - we rely on raw copies for other types as the
     // fallback loop asserts FP32
-    else if(src_dst_same && !need_quantized_conversion && (shape[3] >= 4 || !std::is_same_v<SrcType, float>)) {
+    else if(src_dst_same && !need_quantized_conversion && (nshape[3] >= 4 || !std::is_same_v<SrcType, float>)) {
         const size_t dst_stride = nshape[3];
         for(size_t i = 0; i < nshape[0] * nshape[1]; i++) {
             for(size_t j = 0; j < nshape[2]; j++) {
