@@ -185,13 +185,16 @@ static bool ggml_backend_metalium_device_supports_op_internal(ggml_backend_dev_t
         case GGML_OP_SQR:
         case GGML_OP_PERMUTE:
         case GGML_OP_LOG:
-        case GGML_OP_GROUP_NORM:
         case GGML_OP_VIEW:
         // SUM{_ROWS} technically works but supprts_op rejects the result tensor.
         // Which gotta do so to avoid some bugs around binary ops with tiled dim=1
         case GGML_OP_SUM:
         case GGML_OP_SUM_ROWS:
             return true;
+
+        case GGML_OP_GROUP_NORM:
+            // TODO: Re-enable once TTNN supports GROUP_NORM for types other than bfloat16.
+            return false;
 
         case GGML_OP_CONT:
         case GGML_OP_CPY:
