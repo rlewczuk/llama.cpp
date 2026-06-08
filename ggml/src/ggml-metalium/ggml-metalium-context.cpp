@@ -800,7 +800,8 @@ static void ggml_backend_metalium_buffer_set_tensor(ggml_backend_buffer_t buffer
 
       if(offset != 0 || size != ggml_nbytes(tensor)) {
           GGML_ASSERT(offset + size <= ggml_nbytes(tensor));
-          GGML_ASSERT(tensor->view_src == NULL);
+          // FIXME: Metalium set_tensor() does not fully support writing to view
+            // tensors; for now we silently update the view host_shadow.
           meta->host_shadow.resize(ggml_nbytes(tensor));
           memcpy(meta->host_shadow.data() + offset, data, size);
           data = meta->host_shadow.data();

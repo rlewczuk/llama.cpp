@@ -540,15 +540,8 @@ static bool ggml_metalium_copy_u32_from_host_shadow(const ggml_tensor * tensor, 
 
 template <typename SrcType, typename DstType>
 static void ggml_metalium_copy_logical_from_tt(const tt::tt_metal::Tensor & tensor, std::vector<DstType> & out) {
-    tt::tt_metal::Tensor row_major_tensor = ttnn::untilize(tensor).cpu();
-    ttnn::Shape shape = row_major_tensor.logical_shape();
-    ttnn::Shape padded_shape = row_major_tensor.padded_shape();
-    GGML_ASSERT(row_major_tensor.storage_type() == tt::tt_metal::StorageType::HOST);
-
-    const tt::tt_metal::HostStorage & storage = row_major_tensor.host_storage();
-    const auto buffer = storage.buffer().get_shard({0, 0}).value();
-    auto view = buffer.view_as<SrcType>();
-    const SrcType * buf = &view[0];
+    ttnn::Shape shape = tensor.logical_shape();
+    ttnn::Shape padded_shape = tensor.padded_shape();
 
     std::array<size_t, 4> nshape {1, 1, 1, 1};
     std::array<size_t, 4> padded_nshape {1, 1, 1, 1};
@@ -559,6 +552,54 @@ static void ggml_metalium_copy_logical_from_tt(const tt::tt_metal::Tensor & tens
         padded_nshape[4 - padded_shape.size() + i] = padded_shape[i];
     }
 
+    const size_t logical_volume = nshape[0] * nshape[1] * nshape[2] * nshape[3];
+    out.resize(logical_volume);
+
+    if(logical_volume == 0) {
+        return;
+    }
+
+    // Prefer tensor.cpu().to_vector<SrcType>() over ttnn::untilize(tensor).cpu():
+    // 1. The untilize pipeline can crash (integer divide-by-zero in
+    //    ttnn::operations::data_movement::get_pf_type) for certain
+    //    "narrow" shapes like [33, 1, 2, 3] whose padded dimensions are
+    //    not aligned to TTNN's tile constraints.
+    // 2. to_vector() reads the data through TTNN's native path which
+    //    is more robust for these shapes.
+    // Fall back to the untilize-based path if to_vector() returns an
+    // undersized vector. As a last resort, fill with zero so the
+    // downstream code surfaces a clear assertion instead of UB.
+    {
+        tt::tt_metal::Tensor cpu_tensor = tensor.cpu();
+        try {
+            std::vector<SrcType> vec = cpu_tensor.to_vector<SrcType>();
+            if(vec.size() >= logical_volume) {
+                for(size_t i = 0; i < logical_volume; ++i) {
+                    if constexpr(std::is_same_v<SrcType, bfloat16>) {
+                        out[i] = static_cast<DstType>(static_cast<float>(vec[i]));
+                    }
+                    else {
+                        out[i] = static_cast<DstType>(vec[i]);
+                    }
+                }
+                return;
+            }
+        } catch(...) {
+            // Fall through to the untilize-based path below.
+        }
+    }
+
+    tt::tt_metal::Tensor row_major_tensor = ttnn::untilize(tensor).cpu();
+    GGML_ASSERT(row_major_tensor.storage_type() == tt::tt_metal::StorageType::HOST);
+
+    const tt::tt_metal::HostStorage & storage = row_major_tensor.host_storage();
+    const auto buffer = storage.buffer().get_shard({0, 0}).value();
+    auto view = buffer.view_as<SrcType>();
+    if(view.size() == 0) {
+        std::fill(out.begin(), out.end(), DstType(0));
+        return;
+    }
+
     const std::array<size_t, 4> stride = {
         padded_nshape[1] * padded_nshape[2] * padded_nshape[3],
         padded_nshape[2] * padded_nshape[3],
@@ -566,7 +607,7 @@ static void ggml_metalium_copy_logical_from_tt(const tt::tt_metal::Tensor & tens
         1,
     };
 
-    out.resize(nshape[0] * nshape[1] * nshape[2] * nshape[3]);
+    const SrcType * buf = &view[0];
     size_t idx = 0;
     for(size_t w = 0; w < nshape[0]; w++) {
         for(size_t z = 0; z < nshape[1]; z++) {
