@@ -437,6 +437,278 @@ static void ggml_backend_metalium_set(ggml_backend_metalium_context * ctx, struc
             .bufctx = src0_meta->bufctx
         };
     }
+  }
+
+bool ggml_backend_metalium_can_set_rows(const struct ggml_tensor * dst)
+{
+    const ggml_tensor * src0 = dst->src[0];
+    const ggml_tensor * src1 = dst->src[1];
+    const ggml_tensor * src2 = dst->src[2];
+
+    if(src0 == nullptr || src1 == nullptr || src2 == nullptr) {
+        return false;
+    }
+    if(src0->type != GGML_TYPE_F32) {
+        return false;
+    }
+    if(src1->type != GGML_TYPE_I32 && src1->type != GGML_TYPE_I64) {
+        return false;
+    }
+    if(dst->type != GGML_TYPE_F32 && dst->type != GGML_TYPE_F16) {
+        return false;
+    }
+    if(src2->type != dst->type) {
+        return false;
+    }
+    // TTNN untilize currently crashes for this padding pattern; leave it to another backend.
+    if(src0->ne[1] == 1 && src0->ne[0] > 32 && src0->ne[0] % 32 != 0) {
+        return false;
+    }
+    return true;
+}
+
+static const std::byte * ggml_metalium_host_shadow_data(const ggml_tensor * tensor) {
+    const ggml_tensor * storage_tensor = tensor;
+    size_t offset = 0;
+    if(ggml_metalium_is_view(tensor) && tensor->view_src != nullptr) {
+        storage_tensor = tensor->view_src;
+        offset = tensor->view_offs;
+    }
+    const TensorWithMetadata * meta = (const TensorWithMetadata*)storage_tensor->extra;
+    if(meta == nullptr || meta->host_shadow.empty()) {
+        return nullptr;
+    }
+    GGML_ASSERT(offset < meta->host_shadow.size());
+    return meta->host_shadow.data() + offset;
+}
+
+static bool ggml_metalium_copy_f32_from_host_shadow(const ggml_tensor * tensor, std::vector<float> & out) {
+    const std::byte * base = ggml_metalium_host_shadow_data(tensor);
+    if(base == nullptr) {
+        return false;
+    }
+    out.resize(ggml_nelements(tensor));
+    size_t idx = 0;
+    for(int64_t i3 = 0; i3 < tensor->ne[3]; ++i3) {
+        for(int64_t i2 = 0; i2 < tensor->ne[2]; ++i2) {
+            for(int64_t i1 = 0; i1 < tensor->ne[1]; ++i1) {
+                for(int64_t i0 = 0; i0 < tensor->ne[0]; ++i0) {
+                    const std::byte * ptr = base + i0*tensor->nb[0] + i1*tensor->nb[1] + i2*tensor->nb[2] + i3*tensor->nb[3];
+                    if(tensor->type == GGML_TYPE_F32) {
+                        out[idx++] = *(const float*)ptr;
+                    }
+                    else if(tensor->type == GGML_TYPE_F16) {
+                        out[idx++] = ggml_fp16_to_fp32(*(const ggml_fp16_t*)ptr);
+                    }
+                    else {
+                        GGML_UNREACHABLE();
+                    }
+                }
+            }
+        }
+    }
+    return true;
+}
+
+static bool ggml_metalium_copy_u32_from_host_shadow(const ggml_tensor * tensor, std::vector<uint32_t> & out) {
+    const std::byte * base = ggml_metalium_host_shadow_data(tensor);
+    if(base == nullptr) {
+        return false;
+    }
+    out.resize(ggml_nelements(tensor));
+    size_t idx = 0;
+    for(int64_t i3 = 0; i3 < tensor->ne[3]; ++i3) {
+        for(int64_t i2 = 0; i2 < tensor->ne[2]; ++i2) {
+            for(int64_t i1 = 0; i1 < tensor->ne[1]; ++i1) {
+                for(int64_t i0 = 0; i0 < tensor->ne[0]; ++i0) {
+                    const std::byte * ptr = base + i0*tensor->nb[0] + i1*tensor->nb[1] + i2*tensor->nb[2] + i3*tensor->nb[3];
+                    if(tensor->type == GGML_TYPE_I32) {
+                        out[idx++] = *(const int32_t*)ptr;
+                    }
+                    else if(tensor->type == GGML_TYPE_I64) {
+                        out[idx++] = *(const int64_t*)ptr;
+                    }
+                    else {
+                        GGML_UNREACHABLE();
+                    }
+                }
+            }
+        }
+    }
+    return true;
+}
+
+template <typename SrcType, typename DstType>
+static void ggml_metalium_copy_logical_from_tt(const tt::tt_metal::Tensor & tensor, std::vector<DstType> & out) {
+    tt::tt_metal::Tensor row_major_tensor = ttnn::untilize(tensor).cpu();
+    ttnn::Shape shape = row_major_tensor.logical_shape();
+    ttnn::Shape padded_shape = row_major_tensor.padded_shape();
+    GGML_ASSERT(row_major_tensor.storage_type() == tt::tt_metal::StorageType::HOST);
+
+    const tt::tt_metal::HostStorage & storage = row_major_tensor.host_storage();
+    const auto buffer = storage.buffer().get_shard({0, 0}).value();
+    auto view = buffer.view_as<SrcType>();
+    const SrcType * buf = &view[0];
+
+    std::array<size_t, 4> nshape {1, 1, 1, 1};
+    std::array<size_t, 4> padded_nshape {1, 1, 1, 1};
+    for(size_t i = 0; i < shape.size(); i++) {
+        nshape[4 - shape.size() + i] = shape[i];
+    }
+    for(size_t i = 0; i < padded_shape.size(); i++) {
+        padded_nshape[4 - padded_shape.size() + i] = padded_shape[i];
+    }
+
+    const std::array<size_t, 4> stride = {
+        padded_nshape[1] * padded_nshape[2] * padded_nshape[3],
+        padded_nshape[2] * padded_nshape[3],
+        padded_nshape[3],
+        1,
+    };
+
+    out.resize(nshape[0] * nshape[1] * nshape[2] * nshape[3]);
+    size_t idx = 0;
+    for(size_t w = 0; w < nshape[0]; w++) {
+        for(size_t z = 0; z < nshape[1]; z++) {
+            for(size_t y = 0; y < nshape[2]; y++) {
+                for(size_t x = 0; x < nshape[3]; x++) {
+                    const size_t src_idx = w * stride[0] + z * stride[1] + y * stride[2] + x;
+                    if constexpr(std::is_same_v<SrcType, bfloat16>) {
+                        out[idx++] = static_cast<DstType>(static_cast<float>(buf[src_idx]));
+                    }
+                    else {
+                        out[idx++] = static_cast<DstType>(buf[src_idx]);
+                    }
+                }
+            }
+        }
+    }
+}
+
+template <typename T>
+static tt::tt_metal::HostBuffer ggml_metalium_vector_to_host_buffer(std::vector<T> && vec) {
+    auto vec_ptr = std::make_shared<std::vector<T>>(std::move(vec));
+    int * refcount = new int(0);
+    T * data = vec_ptr->data();
+    const size_t size = vec_ptr->size();
+    tt::tt_metal::MemoryPin pin(
+        [refcount]() mutable { (*refcount)++; },
+        [refcount, vec_ptr=std::move(vec_ptr)]() mutable {
+            (*refcount)--;
+            if(*refcount == 0) {
+                delete refcount;
+            }
+        }
+    );
+    return tt::tt_metal::HostBuffer(ttsl::Span<T>(data, size), std::move(pin));
+}
+
+static void ggml_backend_metalium_set_rows(ggml_backend_metalium_context * ctx, struct ggml_tensor * dst)
+{
+    GGML_UNUSED(ctx);
+    GGML_METALIUM_OP_SANITY_CHECK(dst);
+    GGML_METALIUM_OP_SRC0_SANITY_CHECK(dst);
+    GGML_METALIUM_OP_SRC1_SANITY_CHECK(dst);
+    GGML_ASSERT(dst->src[2] != nullptr && dst->src[2]->extra != nullptr);
+
+    const ggml_tensor * src0 = dst->src[0];
+    const ggml_tensor * src1 = dst->src[1];
+    ggml_tensor * src2 = dst->src[2];
+
+    TensorWithMetadata * dst_meta  = (TensorWithMetadata*)dst->extra;
+    TensorWithMetadata * src2_meta = (TensorWithMetadata*)src2->extra;
+
+    GGML_ASSERT(ggml_backend_metalium_can_set_rows(dst));
+    GGML_ASSERT(src2_meta->tensor != nullptr);
+
+    std::vector<float> src_rows;
+    if(!ggml_metalium_copy_f32_from_host_shadow(src0, src_rows)) {
+        auto src0_tensor = ggml_metalium_realize_ggml_view(src0);
+        ggml_metalium_copy_logical_from_tt<float, float>(*src0_tensor, src_rows);
+    }
+
+    std::vector<uint32_t> row_ids;
+    if(!ggml_metalium_copy_u32_from_host_shadow(src1, row_ids)) {
+        auto src1_tensor = ggml_metalium_realize_ggml_view(src1);
+        ggml_metalium_copy_logical_from_tt<uint32_t, uint32_t>(*src1_tensor, row_ids);
+    }
+
+    std::vector<float> dst_data;
+    if(!ggml_metalium_copy_f32_from_host_shadow(src2, dst_data)) {
+        if(src2_meta->tensor->dtype() == tt::tt_metal::DataType::FLOAT32) {
+            ggml_metalium_copy_logical_from_tt<float, float>(*src2_meta->tensor, dst_data);
+        }
+        else {
+            ggml_metalium_copy_logical_from_tt<bfloat16, float>(*src2_meta->tensor, dst_data);
+        }
+    }
+
+    const int64_t nc = src0->ne[0];
+    const int64_t nr = src0->ne[1];
+    const int64_t ne02 = src0->ne[2];
+    const int64_t ne03 = src0->ne[3];
+    const int64_t ne1 = dst->ne[1];
+    const int64_t ne11 = src1->ne[1];
+    const int64_t ne12 = src1->ne[2];
+
+    for(int64_t i03 = 0; i03 < ne03; ++i03) {
+        for(int64_t i02 = 0; i02 < ne02; ++i02) {
+            for(int64_t i = 0; i < nr; ++i) {
+                const uint32_t row = row_ids[(i03 % ne12) * ne11 * nr + (i02 % ne11) * nr + i];
+                GGML_ASSERT(row < (uint32_t)ne1);
+                const size_t src_off = ((i03 * ne02 + i02) * nr + i) * nc;
+                const size_t dst_off = ((i03 * ne02 + i02) * ne1 + row) * nc;
+                GGML_ASSERT(src_off + nc <= src_rows.size());
+                GGML_ASSERT(dst_off + nc <= dst_data.size());
+                memcpy(dst_data.data() + dst_off, src_rows.data() + src_off, nc * sizeof(float));
+            }
+        }
+    }
+
+    std::vector<std::byte> host_shadow(ggml_nbytes(src2));
+    if(dst->type == GGML_TYPE_F32) {
+        GGML_ASSERT(host_shadow.size() == dst_data.size() * sizeof(float));
+        memcpy(host_shadow.data(), dst_data.data(), host_shadow.size());
+    }
+    else {
+        std::vector<ggml_fp16_t> f16(dst_data.size());
+        GGML_ASSERT(host_shadow.size() == f16.size() * sizeof(ggml_fp16_t));
+        for(size_t i = 0; i < dst_data.size(); ++i) {
+            f16[i] = ggml_fp32_to_fp16(dst_data[i]);
+        }
+        memcpy(host_shadow.data(), f16.data(), host_shadow.size());
+    }
+
+    std::vector<uint32_t> shape(src2->ne, src2->ne + GGML_MAX_DIMS);
+    std::reverse(shape.begin(), shape.end());
+    tt::tt_metal::Tensor res;
+    if(dst->type == GGML_TYPE_F32) {
+        auto storage = ggml_metalium_vector_to_host_buffer(std::move(dst_data));
+        tt::tt_metal::Tensor t(std::move(storage), ttnn::Shape(shape), tt::tt_metal::DataType::FLOAT32, tt::tt_metal::Layout::ROW_MAJOR);
+        res = ttnn::tilize_with_zero_padding(t.to_device(src2_meta->bufctx->device.get()), std::nullopt, tt::tt_metal::DataType::FLOAT32);
+    }
+    else {
+        std::vector<bfloat16> bf16(dst_data.size());
+        const auto * trait = ggml_get_type_traits_cpu(GGML_TYPE_BF16);
+        trait->from_float(dst_data.data(), bf16.data(), bf16.size());
+        auto storage = ggml_metalium_vector_to_host_buffer(std::move(bf16));
+        tt::tt_metal::Tensor t(std::move(storage), ttnn::Shape(shape), tt::tt_metal::DataType::BFLOAT16, tt::tt_metal::Layout::ROW_MAJOR);
+        res = ttnn::tilize_with_zero_padding(t.to_device(src2_meta->bufctx->device.get()), std::nullopt, tt::tt_metal::DataType::BFLOAT16);
+    }
+
+    auto tensor = std::make_shared<tt::tt_metal::Tensor>(std::move(res));
+    *src2_meta = {
+        .tensor = tensor,
+        .ggtype = src2->type,
+        .bufctx = src2_meta->bufctx,
+        .host_shadow = host_shadow,
+    };
+    *dst_meta = {
+        .tensor = tensor,
+        .ggtype = dst->type,
+        .bufctx = src2_meta->bufctx,
+        .host_shadow = std::move(host_shadow),
+    };
 }
 static void ggml_backend_metalium_clamp(ggml_backend_metalium_context * ctx, struct ggml_tensor * dst)
 {
@@ -1164,11 +1436,14 @@ enum ggml_status ggml_backend_metalium_graph_compute(ggml_backend_t backend, str
             case GGML_OP_DUP:
                 ggml_backend_metalium_cpy(ctx, node);
                 break;
-            case GGML_OP_SET:
-                ggml_backend_metalium_set(ctx, node);
-                break;
+              case GGML_OP_SET:
+                  ggml_backend_metalium_set(ctx, node);
+                  break;
+              case GGML_OP_SET_ROWS:
+                  ggml_backend_metalium_set_rows(ctx, node);
+                  break;
 
-            case GGML_OP_CLAMP:
+              case GGML_OP_CLAMP:
                 ggml_backend_metalium_clamp(ctx, node);
                 break;
 

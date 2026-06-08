@@ -47,6 +47,7 @@ struct TensorWithMetadata {
     std::shared_ptr<tt::tt_metal::Tensor> tensor;
     ggml_type ggtype = GGML_TYPE_COUNT;
     ggml_backend_metalium_buffer_context* bufctx = nullptr;
+    std::vector<std::byte> host_shadow;
 };
 
 struct ggml_backend_metalium_buffer_type_context {

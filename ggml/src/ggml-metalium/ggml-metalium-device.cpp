@@ -221,9 +221,11 @@ static bool ggml_backend_metalium_device_supports_op_internal(ggml_backend_dev_t
 
         case GGML_OP_MUL_MAT:
             return tensor_supported(src1) && ggml_backend_metalium_can_mul_mat(op);
-        case GGML_OP_SET:
-            return tensor_supported(src1) && ggml_backend_metalium_can_set(op);
-        case GGML_OP_SOFT_MAX:
+          case GGML_OP_SET:
+              return tensor_supported(src1) && ggml_backend_metalium_can_set(op);
+          case GGML_OP_SET_ROWS:
+              return ggml_backend_metalium_can_set_rows(op);
+          case GGML_OP_SOFT_MAX:
             return ggml_backend_metalium_can_softmax(op);
         case GGML_OP_GET_ROWS:
             return tensor_supported(src1) && ggml_backend_metalium_can_get_rows(op);

@@ -157,7 +157,7 @@ static tt::tt_metal::DataType ggml_metalium_ggml2tt_type_internal(ggml_type ggty
             /*GGML_TYPE_I8 = */ tt::tt_metal::DataType::INVALID,
             /*GGML_TYPE_I16 = */ tt::tt_metal::DataType::INVALID,
             /*GGML_TYPE_I32 = */ tt::tt_metal::DataType::UINT32, // Yeah not ideal. but don't have support for tilizing int32 on device
-            /*GGML_TYPE_I64 = */ tt::tt_metal::DataType::INVALID,
+              /*GGML_TYPE_I64 = */ tt::tt_metal::DataType::UINT32, // index tensors: uploaded truncated to 32-bit for device ops
             /*GGML_TYPE_F64 = */ tt::tt_metal::DataType::INVALID,
             /*GGML_TYPE_IQ1_M = */ tt::tt_metal::DataType::INVALID,
             /*GGML_TYPE_BF16 = */ tt::tt_metal::DataType::BFLOAT16,
@@ -208,7 +208,7 @@ static tt::tt_metal::HostBuffer ggml_metalium_data_to_borrowed_storage(const Src
     using Src = std::remove_cv_t<std::remove_reference_t<SrcType>>;
     using Dst = std::remove_cv_t<std::remove_reference_t<DstType>>;
     // Convert from  GGML types to TT types
-    static_assert(std::is_same_v<Src, float> || std::is_same_v<Src, ggml_bf16_t> || std::is_same_v<Src, ggml_fp16_t> || std::is_same_v<Src, int>);
+    static_assert(std::is_same_v<Src, float> || std::is_same_v<Src, ggml_bf16_t> || std::is_same_v<Src, ggml_fp16_t> || std::is_same_v<Src, int> || std::is_same_v<Src, int64_t>);
     static_assert(std::is_same_v<Dst, float> || std::is_same_v<Dst, bfloat16> || std::is_same_v<Dst, uint32_t>);
 
     auto src_adaptor = [](const SrcType& src) -> float {
@@ -221,11 +221,14 @@ static tt::tt_metal::HostBuffer ggml_metalium_data_to_borrowed_storage(const Src
         else if constexpr(std::is_same_v<Src, float>) {
             return src;
         }
-        else if constexpr(std::is_same_v<Src, int>) {
-            return static_cast<float>(src);
-        }
-        GGML_UNREACHABLE();
-    };
+          else if constexpr(std::is_same_v<Src, int>) {
+              return static_cast<float>(src);
+          }
+          else if constexpr(std::is_same_v<Src, int64_t>) {
+              return static_cast<float>(src);
+          }
+          GGML_UNREACHABLE();
+      };
 
     auto dst_adaptor = [](DstType& dst, float val) {
         if constexpr(std::is_same_v<Dst, bfloat16>) {
@@ -788,17 +791,32 @@ static void ggml_backend_metalium_buffer_set_tensor(ggml_backend_buffer_t buffer
     // F32 is uploaded and tilized as FLOAT32 so element-wise operations preserve full precision.
     // TODO: Make a scalable way to decide which GGML type casts to TT quantized types
     // TODO: Use the simpler tilize() when the final 2 dimensions are both multiples of 32
-    GGML_ASSERT(offset == 0);
-    GGML_ASSERT(tensor->extra != NULL);
+      GGML_ASSERT(tensor->extra != NULL);
 
     ggml_backend_metalium_buffer_context * bufctx = (ggml_backend_metalium_buffer_context *)buffer->context;
     ggml_type ggtype = tensor->type;
-    TensorWithMetadata * meta = (TensorWithMetadata *)tensor->extra;
-    const tt::ARCH processor_class = bufctx->device->arch();
+      TensorWithMetadata * meta = (TensorWithMetadata *)tensor->extra;
+      const tt::ARCH processor_class = bufctx->device->arch();
+
+      if(offset != 0 || size != ggml_nbytes(tensor)) {
+          GGML_ASSERT(offset + size <= ggml_nbytes(tensor));
+          GGML_ASSERT(tensor->view_src == NULL);
+          meta->host_shadow.resize(ggml_nbytes(tensor));
+          memcpy(meta->host_shadow.data() + offset, data, size);
+          data = meta->host_shadow.data();
+          offset = 0;
+          size = ggml_nbytes(tensor);
+      }
+      else if(tensor->view_src == NULL) {
+          meta->host_shadow.resize(size);
+          memcpy(meta->host_shadow.data(), data, size);
+      }
+
+      GGML_ASSERT(offset == 0);
 
     // Make sure we are not writing to a view tensor
-    if(size != ggml_nbytes(tensor) || (meta->tensor && ggml_tt_tensors_shape_equal(tensor, *meta->tensor) == false)
-        || tensor->view_src != NULL) {
+      if(size != ggml_nbytes(tensor) || (meta->tensor && ggml_tt_tensors_shape_equal(tensor, *meta->tensor) == false)
+          || tensor->view_src != NULL) {
         // FIXME: Reenable this when got time
         // fprintf(stderr, "Warning: Metalium set_tensor() does not work with tensor views\n");
         return;
@@ -817,10 +835,14 @@ static void ggml_backend_metalium_buffer_set_tensor(ggml_backend_buffer_t buffer
     else if (ggtype == GGML_TYPE_BF16) {
         storage = ggml_metalium_data_to_borrowed_storage<ggml_bf16_t, bfloat16>((const ggml_bf16_t*)data, size / sizeof(ggml_bf16_t));
     }
-    else if (ggtype == GGML_TYPE_I32) {
-        storage = ggml_metalium_data_to_borrowed_storage<int, uint32_t>((const int*)data, size / sizeof(int));
-        intermidiate_type = tt::tt_metal::DataType::UINT32;
-    }
+      else if (ggtype == GGML_TYPE_I32) {
+          storage = ggml_metalium_data_to_borrowed_storage<int, uint32_t>((const int*)data, size / sizeof(int));
+          intermidiate_type = tt::tt_metal::DataType::UINT32;
+      }
+      else if (ggtype == GGML_TYPE_I64) {
+          storage = ggml_metalium_data_to_borrowed_storage<int64_t, uint32_t>((const int64_t*)data, size / sizeof(int64_t));
+          intermidiate_type = tt::tt_metal::DataType::UINT32;
+      }
     else if (ggml_is_quantized(ggtype)) {
         // Going to FP16 requires a cast to BFLOAT16 which is slower. Instead go to FP32. Even though it's larger
         // it's faster due to one less step.
@@ -906,11 +928,16 @@ static void ggml_backend_metalium_buffer_get_tensor(ggml_backend_buffer_t buffer
     GGML_ASSERT(tensor->extra != NULL);
     GGML_UNUSED(offset);
 
-    // ggml_backend_metalium_buffer_context * ctx = (ggml_backend_metalium_buffer_context *)buffer->context;
+      // ggml_backend_metalium_buffer_context * ctx = (ggml_backend_metalium_buffer_context *)buffer->context;
 
-    ggml_type dst_ggtype = tensor->type;
+      ggml_type dst_ggtype = tensor->type;
+      const TensorWithMetadata * shadow_meta = (const TensorWithMetadata*)tensor->extra;
+      if(shadow_meta != nullptr && !shadow_meta->host_shadow.empty()) {
+          memcpy(data, shadow_meta->host_shadow.data(), size);
+          return;
+      }
 
-    // auto *meta = (TensorWithMetadata*)tensor->extra;
+      // auto *meta = (TensorWithMetadata*)tensor->extra;
     // auto shape = meta->tensor->logical_shape();
     // std::cout << "get_tensor():\n";
     // std::cout << "  GGML thinks shape: " << tensor->ne[0] << " " << tensor->ne[1] << " " << tensor->ne[2] << " " << tensor->ne[3] << std::endl;
