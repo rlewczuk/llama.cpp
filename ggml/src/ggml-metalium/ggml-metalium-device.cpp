@@ -172,27 +172,32 @@ static bool ggml_backend_metalium_device_supports_op_internal(ggml_backend_dev_t
                 default:
                     return false;
             }
-        case GGML_OP_LEAKY_RELU:
-        case GGML_OP_NONE:
-        case GGML_OP_RESHAPE:
-        case GGML_OP_TRANSPOSE:
-        case GGML_OP_CLAMP:
-        case GGML_OP_SCALE:
-        case GGML_OP_NORM:
-        case GGML_OP_RMS_NORM:
-        case GGML_OP_ADD1:
-        case GGML_OP_SQRT:
-        case GGML_OP_SQR:
-        case GGML_OP_PERMUTE:
-        case GGML_OP_LOG:
-        case GGML_OP_VIEW:
-        // SUM{_ROWS} technically works but supprts_op rejects the result tensor.
-        // Which gotta do so to avoid some bugs around binary ops with tiled dim=1
-        case GGML_OP_SUM:
-        case GGML_OP_SUM_ROWS:
-            return true;
+          case GGML_OP_LEAKY_RELU:
+          case GGML_OP_NONE:
+          case GGML_OP_RESHAPE:
+          case GGML_OP_TRANSPOSE:
+          case GGML_OP_CLAMP:
+          case GGML_OP_SCALE:
+          case GGML_OP_NORM:
+          case GGML_OP_RMS_NORM:
+          case GGML_OP_ADD1:
+          case GGML_OP_SQRT:
+          case GGML_OP_SQR:
+          case GGML_OP_PERMUTE:
+          case GGML_OP_LOG:
+          case GGML_OP_VIEW:
+          // SUM{_ROWS} technically works but supprts_op rejects the result tensor.
+          // Which gotta do so to avoid some bugs around binary ops with tiled dim=1
+          case GGML_OP_SUM_ROWS:
+              return true;
 
-        case GGML_OP_GROUP_NORM:
+          case GGML_OP_SUM:
+              // Defensive guard: the ggml CPU reference SUM asserts
+              // `src0->nb[0] == sizeof(float)`, so we must refuse any SUM whose
+              // source layout the CPU path cannot legally run. We also reject
+              // non-simple GGML views to keep view realization semantics safe
+              // for reductions until full strided/permuted view support lands.
+              return ggml_backend_metalium_can_sum(op);        case GGML_OP_GROUP_NORM:
             // TODO: Re-enable once TTNN supports GROUP_NORM for types other than bfloat16.
             return false;
 

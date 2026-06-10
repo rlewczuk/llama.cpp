@@ -1238,6 +1238,35 @@ static void ggml_backend_metalium_outer_product(ggml_backend_metalium_context * 
         .bufctx = src0_meta->bufctx
     };
 }
+bool ggml_backend_metalium_can_sum(const struct ggml_tensor * dst)
+{
+    const ggml_tensor * src0 = dst->src[0];
+    if (src0 == nullptr) {
+        return false;
+    }
+
+    if (src0->type != GGML_TYPE_F32 && src0->type != GGML_TYPE_F16 && src0->type != GGML_TYPE_BF16) {
+        return false;
+    }
+
+    // Match ggml CPU sum_f32 precondition for F32 reference compatibility. The CPU
+    // reference asserts on `src0->nb[0] != sizeof(float)`, so we must not advertise
+    // support for variants where the inner stride is not the type size.
+    if (src0->type == GGML_TYPE_F32 && src0->nb[0] != sizeof(float)) {
+        return false;
+    }
+
+    // Defensive until full view/permute semantics are validated for reductions.
+    // `ggml_metalium_is_view` treats PERMUTE/TRANSPOSE/RESHAPE/VIEW as views, and
+    // only simple contiguous unit slices are guaranteed safe to materialize as a
+    // TTNN slice. Reject anything else to fall back to the CPU reference path.
+    if (ggml_metalium_is_view(src0) && !ggml_metalium_is_simple_unit_slice(src0)) {
+        return false;
+    }
+
+    return true;
+}
+
 static void ggml_backend_metalium_sum(ggml_backend_metalium_context * ctx, struct ggml_tensor * dst)
 {
     GGML_METALIUM_OP_SANITY_CHECK(dst);
