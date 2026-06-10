@@ -1148,9 +1148,9 @@ struct test_case {
         if (contains_f16 && strcmp(ggml_backend_reg_name(reg), "WebGPU") == 0) {
             return std::max(max_nmse_err(), 1e-6);
         }
-        // Tenstorrent devices use only bf16
-        if (contains_f16 && strcmp(ggml_backend_reg_name(reg), "Metalium") == 0) {
-            return std::max(max_nmse_err(), 1e-5);
+        // Tenstorrent devices use only bf16, also f32 precision is slightly less than on CPUs
+        if (strcmp(ggml_backend_reg_name(reg), "Metalium") == 0) {
+            return contains_f16 ? std::max(max_nmse_err(), 1e-5) : std::max(max_nmse_err(), 1e-6);
         }
         return max_nmse_err();
     }
