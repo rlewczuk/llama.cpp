@@ -19,7 +19,6 @@ target_link_libraries(ggml-metalium PRIVATE
     TT::Metalium
     TTNN::TTNN
     ggml-base
-    ggml-cpu
 )
 
 

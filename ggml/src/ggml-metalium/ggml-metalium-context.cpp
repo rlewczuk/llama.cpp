@@ -2,7 +2,6 @@
 #include "ggml-backend.h"
 #include "ggml.h"
 #include "ggml-impl.h"
-#include "ggml-cpu.h"
 
 #include "ggml-metalium-context.h"
 #include "ggml-metalium-util.h"
@@ -125,6 +124,70 @@ static size_t g_metalium_base_offset = 0;
 ///////////////////////////////////////////////////////////////////////////////////////////////////////
 // Actual backend code
 ///////////////////////////////////////////////////////////////////////////////////////////////////////
+
+static void ggml_metalium_from_float(enum ggml_type type, const float * src, void * dst, int64_t nelements) {
+    GGML_ASSERT(src != nullptr);
+    GGML_ASSERT(dst != nullptr);
+    GGML_ASSERT(nelements >= 0);
+
+    switch (type) {
+        case GGML_TYPE_F32:
+            memcpy(dst, src, (size_t) nelements * sizeof(float));
+            return;
+
+        case GGML_TYPE_F16:
+            ggml_fp32_to_fp16_row(src, (ggml_fp16_t *) dst, nelements);
+            return;
+
+        case GGML_TYPE_BF16:
+            ggml_fp32_to_bf16_row(src, (ggml_bf16_t *) dst, nelements);
+            return;
+
+        case GGML_TYPE_I8:
+            for (int64_t i = 0; i < nelements; ++i) {
+                ((int8_t *) dst)[i] = (int8_t) src[i];
+            }
+            return;
+
+        case GGML_TYPE_I16:
+            for (int64_t i = 0; i < nelements; ++i) {
+                ((int16_t *) dst)[i] = (int16_t) src[i];
+            }
+            return;
+
+        case GGML_TYPE_I32:
+            for (int64_t i = 0; i < nelements; ++i) {
+                ((int32_t *) dst)[i] = (int32_t) src[i];
+            }
+            return;
+
+        case GGML_TYPE_I64:
+            for (int64_t i = 0; i < nelements; ++i) {
+                ((int64_t *) dst)[i] = (int64_t) src[i];
+            }
+            return;
+
+        case GGML_TYPE_F64:
+            for (int64_t i = 0; i < nelements; ++i) {
+                ((double *) dst)[i] = (double) src[i];
+            }
+            return;
+
+        default:
+            break;
+    }
+
+    GGML_ASSERT(ggml_is_quantized(type));
+    const int64_t blck_size = ggml_blck_size(type);
+    GGML_ASSERT(nelements % blck_size == 0);
+
+    // Keep quantization backend-neutral. ggml_quantize_chunk() and ggml-quants.c
+    // are part of ggml-base, while ggml_get_type_traits_cpu()->from_float lives in
+    // the CPU backend and makes a dynamically loaded Metalium backend depend on CPU.
+    const size_t written = ggml_quantize_chunk(type, src, dst, 0, 1, nelements, nullptr);
+    GGML_ASSERT(written == ggml_row_size(type, nelements));
+}
+
 
 static tt::tt_metal::DataType ggml_metalium_ggml2tt_type_internal(ggml_type ggtype, tt::ARCH arch) {
     // This table is consulted to map GGML types to TT types dueing tensor creation
@@ -258,9 +321,7 @@ static tt::tt_metal::HostBuffer ggml_metalium_data_to_borrowed_storage(const Src
     }
     // special case for BFP16 (much faster then TTNN's implementation)
     else if constexpr(std::is_same_v<Src, float> && std::is_same_v<Dst, bfloat16>) {
-        const auto* trait = ggml_get_type_traits_cpu(GGML_TYPE_BF16);
-        assert(trait != nullptr);
-        trait->from_float(src, vec, size);
+        ggml_fp32_to_bf16_row(src, (ggml_bf16_t *) vec, size);
     }
     else {
         for(size_t i = 0; i < size; i++) {
@@ -456,46 +517,7 @@ static void ggml_metalium_tensor_to_ggml(const tt::tt_metal::Tensor& tensor, voi
         GGML_ASSERT(intermid != nullptr);
         const float* intermid_f32 = (const float*)intermid;
         const int64_t nelements = shape.volume();
-
-        switch (dst_ggtype) {
-            case GGML_TYPE_I8:
-                for (int64_t i = 0; i < nelements; i++) {
-                    ((int8_t*)dst)[i] = (int8_t)intermid_f32[i];
-                }
-                break;
-            case GGML_TYPE_I16:
-                for (int64_t i = 0; i < nelements; i++) {
-                    ((int16_t*)dst)[i] = (int16_t)intermid_f32[i];
-                }
-                break;
-            case GGML_TYPE_I32:
-                for (int64_t i = 0; i < nelements; i++) {
-                    ((int32_t*)dst)[i] = (int32_t)intermid_f32[i];
-                }
-                break;
-            case GGML_TYPE_I64:
-                for (int64_t i = 0; i < nelements; i++) {
-                    ((int64_t*)dst)[i] = (int64_t)intermid_f32[i];
-                }
-                break;
-            case GGML_TYPE_F64:
-                for (int64_t i = 0; i < nelements; i++) {
-                    ((double*)dst)[i] = (double)intermid_f32[i];
-                }
-                break;
-            case GGML_TYPE_BF16:
-                ggml_fp32_to_bf16_row(intermid_f32, (ggml_bf16_t*)dst, nelements);
-                break;
-            case GGML_TYPE_F16:
-            default:
-                GGML_ASSERT((ggml_is_quantized(dst_ggtype) || dst_ggtype == GGML_TYPE_F16) && "This block should only reach for quantized data types, FP16, BF16, or numeric conversions");
-                {
-                    const ggml_type_traits_cpu* trait = ggml_get_type_traits_cpu(dst_ggtype);
-                    GGML_ASSERT(trait->from_float != NULL);
-                    trait->from_float(intermid_f32, dst, nelements);
-                }
-                break;
-        }
+        ggml_metalium_from_float(dst_ggtype, intermid_f32, dst, nelements);
     }
 }
 
