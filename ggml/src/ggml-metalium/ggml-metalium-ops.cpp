@@ -333,12 +333,12 @@ static bool ggml_metalium_can_flatten_for_eltwise(const ggml_tensor * t)
     return !ggml_metalium_is_view(t) && ggml_is_contiguous(t);
 }
 
-static bool ggml_metalium_needs_mul_host_path(const ggml_tensor * dst)
+static bool ggml_metalium_needs_bin_host_path(const ggml_tensor * dst, ggml_op op)
 {
     const ggml_tensor * src0 = dst->src[0];
     const ggml_tensor * src1 = dst->src[1];
 
-    if(dst->op != GGML_OP_MUL || src0 == nullptr || src1 == nullptr || src0->type != src1->type) {
+    if((op != GGML_OP_MUL && op != GGML_OP_SUB) || src0 == nullptr || src1 == nullptr || src0->type != src1->type) {
         return false;
     }
 
@@ -374,7 +374,7 @@ static std::vector<std::byte> ggml_metalium_float_to_host_shadow(const ggml_tens
             ggml_fp32_to_bf16_row(data.data(), (ggml_bf16_t *) shadow.data(), data.size());
             break;
         default:
-            GGML_ASSERT(false && "Unsupported host-shadow type for MUL host path");
+            GGML_ASSERT(false && "Unsupported host-shadow type for bin host path");
             break;
     }
 
@@ -391,7 +391,7 @@ static float ggml_metalium_host_shadow_read_value(const std::byte * data, const 
         case GGML_TYPE_BF16:
             return GGML_BF16_TO_FP32(*(const ggml_bf16_t *) data);
         default:
-            GGML_ASSERT(false && "Unsupported host-shadow type for MUL host path");
+            GGML_ASSERT(false && "Unsupported host-shadow type for bin host path");
             break;
     }
     GGML_UNREACHABLE();
@@ -439,7 +439,7 @@ static bool ggml_metalium_try_host_shadow_to_float(const ggml_tensor * tensor, s
     return true;
 }
 
-static std::vector<float> ggml_metalium_tensor_to_float_for_mul_host_path(const ggml_tensor * tensor)
+static std::vector<float> ggml_metalium_tensor_to_float_for_bin_host_path(const ggml_tensor * tensor)
 {
     std::vector<float> data;
     if(ggml_metalium_try_host_shadow_to_float(tensor, data)) {
@@ -449,15 +449,28 @@ static std::vector<float> ggml_metalium_tensor_to_float_for_mul_host_path(const 
     return ggml_metalium_tensor_to_float(tensor);
 }
 
-static void ggml_backend_metalium_mul_host_path(struct ggml_tensor * dst)
+static void ggml_backend_metalium_bin_host_path(struct ggml_tensor * dst, ggml_op op)
 {
     const ggml_tensor * src0 = dst->src[0];
     const ggml_tensor * src1 = dst->src[1];
     TensorWithMetadata * meta0 = (TensorWithMetadata *) src0->extra;
     TensorWithMetadata * dst_meta = (TensorWithMetadata *) dst->extra;
 
-    const std::vector<float> a = ggml_metalium_tensor_to_float_for_mul_host_path(src0);
-    const std::vector<float> b = ggml_metalium_tensor_to_float_for_mul_host_path(src1);
+    float (*op_fn)(float, float) = nullptr;
+    switch(op) {
+        case GGML_OP_MUL:
+            op_fn = [](float a, float b) { return a * b; };
+            break;
+        case GGML_OP_SUB:
+            op_fn = [](float a, float b) { return a - b; };
+            break;
+        default:
+            GGML_ASSERT(false && "Unsupported binary operation in host path");
+            break;
+    }
+
+    const std::vector<float> a = ggml_metalium_tensor_to_float_for_bin_host_path(src0);
+    const std::vector<float> b = ggml_metalium_tensor_to_float_for_bin_host_path(src1);
     std::vector<float> result(ggml_nelements(dst));
 
     size_t dst_idx = 0;
@@ -467,7 +480,7 @@ static void ggml_backend_metalium_mul_host_path(struct ggml_tensor * dst)
                 for(int64_t i0 = 0; i0 < dst->ne[0]; i0++) {
                     const float av = a[ggml_metalium_bcast_offset(src0, i0, i1, i2, i3)];
                     const float bv = b[ggml_metalium_bcast_offset(src1, i0, i1, i2, i3)];
-                    result[dst_idx++] = av * bv;
+                    result[dst_idx++] = op_fn(av, bv);
                 }
             }
         }
@@ -493,8 +506,8 @@ static void ggml_backend_metalium_bin_op(ggml_backend_metalium_context * ctx, st
     TensorWithMetadata* meta0 = (TensorWithMetadata*)src0->extra;
     TensorWithMetadata* dst_meta = (TensorWithMetadata*)dst->extra;
 
-    if(op == GGML_OP_MUL && ggml_metalium_needs_mul_host_path(dst)) {
-        ggml_backend_metalium_mul_host_path(dst);
+    if((op == GGML_OP_MUL || op == GGML_OP_SUB) && ggml_metalium_needs_bin_host_path(dst, op)) {
+        ggml_backend_metalium_bin_host_path(dst, op);
         return;
     }
 
