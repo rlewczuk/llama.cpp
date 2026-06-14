@@ -158,3 +158,5 @@ AGENTS.local.md
 /.cswdata/
 /generated/
 /_*.sh
+AGENTS.md
+.agents/
