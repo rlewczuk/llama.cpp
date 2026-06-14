@@ -476,11 +476,14 @@ static void ggml_metalium_tensor_to_ggml(const tt::tt_metal::Tensor& tensor, voi
         }
     }
     // If the 2nd dimension is not divisible by 32, we can still copy block by block
-    else if(src_dst_same && !need_quantized_conversion && nshape[0] % 32 == 0 && nshape[1] % 32 != 0) {
+    else if(src_dst_same && !need_quantized_conversion && nshape[0] % 32 == 0 && nshape[1] % 32 != 0 && nshape[3] == stride[2]) {
         const size_t src_block_size = nshape[2] * nshape[3];
-        const size_t src_block_stride = stride[1];
-        for(size_t i=0;i<nshape[0]*nshape[1];i++) {
-            memcpy((SrcType*)intermid + i * src_block_size, buf + i * src_block_stride, sizeof(SrcType) * src_block_size);
+        for(size_t w = 0; w < nshape[0]; w++) {
+            for(size_t z = 0; z < nshape[1]; z++) {
+                const size_t dst_idx = (w * nshape[1] + z) * src_block_size;
+                const size_t src_idx = w * stride[0] + z * stride[1];
+                memcpy((SrcType*)intermid + dst_idx, buf + src_idx, sizeof(SrcType) * src_block_size);
+            }
         }
     }
     // If we can do row-by-row copy
@@ -577,6 +580,17 @@ tt::tt_metal::Tensor ggml_metalium_reshape_tt_tensor_into_ggml(const tt::tt_meta
     std::array<uint32_t, GGML_MAX_DIMS> target_shape;
     for(int i = 0; i < GGML_MAX_DIMS; i++) {
         target_shape[i] = node->ne[GGML_MAX_DIMS - i - 1];
+    }
+
+    if(tensor.dtype() == tt::tt_metal::DataType::FLOAT32 && tensor.layout() == tt::tt_metal::Layout::TILE) {
+        auto device = tensor.device();
+        const size_t nelements = ggml_nelements(node);
+        std::vector<float> data(nelements);
+        ggml_metalium_tensor_to_ggml<float>(tensor, data.data(), GGML_TYPE_F32);
+
+        auto storage = ggml_metalium_data_to_borrowed_storage<float, float>(data.data(), nelements);
+        tt::tt_metal::Tensor reshaped(std::move(storage), ttnn::Shape(target_shape), tensor.dtype(), tt::tt_metal::Layout::ROW_MAJOR);
+        return ttnn::tilize_with_zero_padding(reshaped.to_device(device), std::nullopt, tensor.dtype());
     }
 
     // std::cerr << "Reshaping tensor " << tensor.logical_shape() << " to " << target_shape << std::endl;
