@@ -26,14 +26,11 @@ GGML_BACKEND_API ggml_backend_reg_t ggml_backend_metalium_reg()
     static std::once_flag once;
     std::call_once(once, [&]() {
         if(getenv("TT_METAL_HOME") == NULL) {
-            fmt::println(stderr, "The TT_METAL_HOME environment variables must be set to use the Metalium backend");
-            abort();
+            GGML_LOG_ERROR("The TT_METAL_HOME environment variables must be set to use the Metalium backend");
+            return;  // we return null if the environment variable is not set -> no backend available
         }
-        // TODO: Support multiple devices (TT supports mesh configuration so it's going to be tricky)
-        // but for now we just work on 1 device at a time
         static std::unique_ptr<ggml_backend_metalium_reg_context> ctx = std::make_unique<ggml_backend_metalium_reg_context>();
-        // TODO: Register multiple mesh devices when non-owning TT discovery is available.
-        const size_t num_devices = 1;//tt::tt_metal::GetNumAvailableDevices();
+        const size_t num_devices = 1;  // we treat whole fabric a a single device, so always 1 device visible in ggml
         ctx->devices.reserve(num_devices);
         for(size_t device_id = 0; device_id < num_devices; device_id++) {
             ggml_backend_metalium_device_context * dev_ctx = new ggml_backend_metalium_device_context;
