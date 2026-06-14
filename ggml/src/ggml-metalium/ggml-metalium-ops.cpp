@@ -333,6 +333,155 @@ static bool ggml_metalium_can_flatten_for_eltwise(const ggml_tensor * t)
     return !ggml_metalium_is_view(t) && ggml_is_contiguous(t);
 }
 
+static bool ggml_metalium_needs_mul_host_path(const ggml_tensor * dst)
+{
+    const ggml_tensor * src0 = dst->src[0];
+    const ggml_tensor * src1 = dst->src[1];
+
+    if(dst->op != GGML_OP_MUL || src0 == nullptr || src1 == nullptr || src0->type != src1->type) {
+        return false;
+    }
+
+    if(src0->type != GGML_TYPE_F32) {
+        return false;
+    }
+
+    return ggml_metalium_needs_eltwise_flatten(dst);
+}
+
+static size_t ggml_metalium_bcast_offset(const ggml_tensor * tensor, const int64_t i0, const int64_t i1, const int64_t i2, const int64_t i3)
+{
+    const int64_t j0 = tensor->ne[0] == 1 ? 0 : i0;
+    const int64_t j1 = tensor->ne[1] == 1 ? 0 : i1;
+    const int64_t j2 = tensor->ne[2] == 1 ? 0 : i2;
+    const int64_t j3 = tensor->ne[3] == 1 ? 0 : i3;
+
+    return (((size_t) j3 * tensor->ne[2] + j2) * tensor->ne[1] + j1) * tensor->ne[0] + j0;
+}
+
+static std::vector<std::byte> ggml_metalium_float_to_host_shadow(const ggml_tensor * tensor, const std::vector<float> & data)
+{
+    std::vector<std::byte> shadow(ggml_nbytes(tensor));
+
+    switch(tensor->type) {
+        case GGML_TYPE_F32:
+            memcpy(shadow.data(), data.data(), data.size() * sizeof(float));
+            break;
+        case GGML_TYPE_F16:
+            ggml_fp32_to_fp16_row(data.data(), (ggml_fp16_t *) shadow.data(), data.size());
+            break;
+        case GGML_TYPE_BF16:
+            ggml_fp32_to_bf16_row(data.data(), (ggml_bf16_t *) shadow.data(), data.size());
+            break;
+        default:
+            GGML_ASSERT(false && "Unsupported host-shadow type for MUL host path");
+            break;
+    }
+
+    return shadow;
+}
+
+static float ggml_metalium_host_shadow_read_value(const std::byte * data, const ggml_type type)
+{
+    switch(type) {
+        case GGML_TYPE_F32:
+            return *(const float *) data;
+        case GGML_TYPE_F16:
+            return GGML_FP16_TO_FP32(*(const ggml_fp16_t *) data);
+        case GGML_TYPE_BF16:
+            return GGML_BF16_TO_FP32(*(const ggml_bf16_t *) data);
+        default:
+            GGML_ASSERT(false && "Unsupported host-shadow type for MUL host path");
+            break;
+    }
+    GGML_UNREACHABLE();
+}
+
+static bool ggml_metalium_try_host_shadow_to_float(const ggml_tensor * tensor, std::vector<float> & data)
+{
+    const TensorWithMetadata * tensor_meta = (const TensorWithMetadata *) tensor->extra;
+    if(tensor_meta != nullptr && !tensor_meta->host_shadow.empty()) {
+        data.resize(ggml_nelements(tensor));
+        const size_t type_size = ggml_type_size(tensor->type);
+        for(size_t i = 0; i < data.size(); i++) {
+            const size_t byte_offset = i * type_size;
+            GGML_ASSERT(byte_offset + type_size <= tensor_meta->host_shadow.size());
+            data[i] = ggml_metalium_host_shadow_read_value(tensor_meta->host_shadow.data() + byte_offset, tensor->type);
+        }
+        return true;
+    }
+
+    const ggml_tensor * storage_tensor = tensor->view_src != nullptr ? tensor->view_src : tensor;
+    if(storage_tensor == tensor && tensor->op == GGML_OP_PERMUTE && tensor->src[0] != nullptr) {
+        storage_tensor = tensor->src[0];
+    }
+
+    const TensorWithMetadata * storage_meta = (const TensorWithMetadata *) storage_tensor->extra;
+    if(storage_meta == nullptr || storage_meta->host_shadow.empty()) {
+        return false;
+    }
+
+    data.resize(ggml_nelements(tensor));
+
+    size_t dst_idx = 0;
+    for(int64_t i3 = 0; i3 < tensor->ne[3]; i3++) {
+        for(int64_t i2 = 0; i2 < tensor->ne[2]; i2++) {
+            for(int64_t i1 = 0; i1 < tensor->ne[1]; i1++) {
+                for(int64_t i0 = 0; i0 < tensor->ne[0]; i0++) {
+                    const size_t byte_offset = tensor->view_offs + i0 * tensor->nb[0] + i1 * tensor->nb[1] + i2 * tensor->nb[2] + i3 * tensor->nb[3];
+                    GGML_ASSERT(byte_offset + ggml_type_size(tensor->type) <= storage_meta->host_shadow.size());
+                    data[dst_idx++] = ggml_metalium_host_shadow_read_value(storage_meta->host_shadow.data() + byte_offset, tensor->type);
+                }
+            }
+        }
+    }
+
+    return true;
+}
+
+static std::vector<float> ggml_metalium_tensor_to_float_for_mul_host_path(const ggml_tensor * tensor)
+{
+    std::vector<float> data;
+    if(ggml_metalium_try_host_shadow_to_float(tensor, data)) {
+        return data;
+    }
+
+    return ggml_metalium_tensor_to_float(tensor);
+}
+
+static void ggml_backend_metalium_mul_host_path(struct ggml_tensor * dst)
+{
+    const ggml_tensor * src0 = dst->src[0];
+    const ggml_tensor * src1 = dst->src[1];
+    TensorWithMetadata * meta0 = (TensorWithMetadata *) src0->extra;
+    TensorWithMetadata * dst_meta = (TensorWithMetadata *) dst->extra;
+
+    const std::vector<float> a = ggml_metalium_tensor_to_float_for_mul_host_path(src0);
+    const std::vector<float> b = ggml_metalium_tensor_to_float_for_mul_host_path(src1);
+    std::vector<float> result(ggml_nelements(dst));
+
+    size_t dst_idx = 0;
+    for(int64_t i3 = 0; i3 < dst->ne[3]; i3++) {
+        for(int64_t i2 = 0; i2 < dst->ne[2]; i2++) {
+            for(int64_t i1 = 0; i1 < dst->ne[1]; i1++) {
+                for(int64_t i0 = 0; i0 < dst->ne[0]; i0++) {
+                    const float av = a[ggml_metalium_bcast_offset(src0, i0, i1, i2, i3)];
+                    const float bv = b[ggml_metalium_bcast_offset(src1, i0, i1, i2, i3)];
+                    result[dst_idx++] = av * bv;
+                }
+            }
+        }
+    }
+
+    ggml_backend_metalium_buffer_context * bufctx = dst_meta->bufctx != nullptr ? dst_meta->bufctx : meta0->bufctx;
+    *dst_meta = {
+        .tensor = ggml_metalium_tensor_from_float(dst, bufctx, result.data()),
+        .ggtype = dst->type,
+        .bufctx = bufctx,
+        .host_shadow = ggml_metalium_float_to_host_shadow(dst, result),
+    };
+}
+
 static void ggml_backend_metalium_bin_op(ggml_backend_metalium_context * ctx, struct ggml_tensor * dst, ggml_op op) {
     GGML_METALIUM_OP_SANITY_CHECK(dst);
     GGML_METALIUM_OP_SRC0_SANITY_CHECK(dst);
@@ -343,6 +492,11 @@ static void ggml_backend_metalium_bin_op(ggml_backend_metalium_context * ctx, st
     const struct ggml_tensor * src1 = dst->src[1];
     TensorWithMetadata* meta0 = (TensorWithMetadata*)src0->extra;
     TensorWithMetadata* dst_meta = (TensorWithMetadata*)dst->extra;
+
+    if(op == GGML_OP_MUL && ggml_metalium_needs_mul_host_path(dst)) {
+        ggml_backend_metalium_mul_host_path(dst);
+        return;
+    }
 
     auto src_tensor0 = ggml_metalium_realize_ggml_view(src0);
     auto src_tensor1 = ggml_metalium_realize_ggml_view(src1);

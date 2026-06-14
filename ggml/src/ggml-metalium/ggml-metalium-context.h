@@ -71,6 +71,8 @@ bool ggml_metalium_is_ggml_type_supported(ggml_type ggtype, tt::ARCH arch);
 bool ggml_metalium_numpy_broadcast_rule(const ggml_tensor* t, const ggml_tensor* q);
 bool ggml_metalium_is_view(const ggml_tensor* tensor);
 bool ggml_metalium_is_simple_unit_slice(const ggml_tensor* view);
+std::vector<float> ggml_metalium_tensor_to_float(const ggml_tensor * tensor);
+std::shared_ptr<tt::tt_metal::Tensor> ggml_metalium_tensor_from_float(const ggml_tensor * tensor, ggml_backend_metalium_buffer_context * bufctx, const float * data);
 tt::tt_metal::Tensor ggml_metalium_reshape_tt_tensor_into_ggml(const tt::tt_metal::Tensor& tensor, const struct ggml_tensor * node);
 std::shared_ptr<tt::tt_metal::Tensor> ggml_metalium_realize_ggml_view(const ggml_tensor* tensor);
 

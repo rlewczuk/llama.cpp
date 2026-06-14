@@ -610,6 +610,60 @@ std::shared_ptr<tt::tt_metal::Tensor> ggml_metalium_realize_ggml_view(const ggml
     return res;
 }
 
+std::vector<float> ggml_metalium_tensor_to_float(const ggml_tensor * tensor)
+{
+    std::shared_ptr<tt::tt_metal::Tensor> t = ggml_metalium_realize_ggml_view(tensor);
+    if(!ggml_metalium_tt_tensor_shape_compatible(tensor, *t)) {
+        t = std::make_shared<tt::tt_metal::Tensor>(ggml_metalium_reshape_tt_tensor_into_ggml(*t, tensor));
+    }
+
+    std::vector<float> data(ggml_nelements(tensor));
+    switch(t->dtype()) {
+        case tt::tt_metal::DataType::BFLOAT16:
+            ggml_metalium_tensor_to_ggml<bfloat16>(*t, data.data(), GGML_TYPE_F32);
+            break;
+        case tt::tt_metal::DataType::FLOAT32:
+            ggml_metalium_tensor_to_ggml<float>(*t, data.data(), GGML_TYPE_F32);
+            break;
+        case tt::tt_metal::DataType::UINT32:
+            ggml_metalium_tensor_to_ggml<uint32_t>(*t, data.data(), GGML_TYPE_F32);
+            break;
+        default:
+            GGML_ASSERT(false && "Unsupported data type in TT tensor when converting to float");
+            break;
+    }
+    return data;
+}
+
+std::shared_ptr<tt::tt_metal::Tensor> ggml_metalium_tensor_from_float(
+    const ggml_tensor * tensor, ggml_backend_metalium_buffer_context * bufctx, const float * data)
+{
+    GGML_ASSERT(bufctx != nullptr);
+    GGML_ASSERT(data != nullptr);
+
+    const size_t nelements = ggml_nelements(tensor);
+    const tt::tt_metal::DataType tt_type = ggml_metalium_ggml2tt_type(tensor->type, bufctx->device->arch());
+
+    ttsl::SmallVector<uint32_t> shape(GGML_MAX_DIMS, 1);
+    for(int i = 0; i < GGML_MAX_DIMS; i++) {
+        shape[i] = tensor->ne[GGML_MAX_DIMS - i - 1];
+    }
+
+    if(tt_type == tt::tt_metal::DataType::FLOAT32) {
+        auto storage = ggml_metalium_data_to_borrowed_storage<float, float>(data, nelements);
+        tt::tt_metal::Tensor t(std::move(storage), ttnn::Shape(shape), tt_type, tt::tt_metal::Layout::ROW_MAJOR);
+        return std::make_shared<tt::tt_metal::Tensor>(ttnn::tilize_with_zero_padding(t.to_device(bufctx->device.get()), std::nullopt, tt_type));
+    }
+
+    if(tt_type == tt::tt_metal::DataType::BFLOAT16) {
+        auto storage = ggml_metalium_data_to_borrowed_storage<float, bfloat16>(data, nelements);
+        tt::tt_metal::Tensor t(std::move(storage), ttnn::Shape(shape), tt_type, tt::tt_metal::Layout::ROW_MAJOR);
+        return std::make_shared<tt::tt_metal::Tensor>(ttnn::tilize_with_zero_padding(t.to_device(bufctx->device.get()), std::nullopt, tt_type));
+    }
+
+    GGML_ASSERT(false && "Unsupported destination type for float upload");
+}
+
 
 static std::shared_ptr<tt::tt_metal::Tensor> ggml_metalium_realize_ggml_view_impl(const ggml_tensor* tensor)
 {
@@ -845,9 +899,9 @@ static void ggml_backend_metalium_buffer_set_tensor(ggml_backend_buffer_t buffer
           size = ggml_nbytes(tensor);
       }
       else if(tensor->view_src == NULL) {
-          meta->host_shadow.resize(size);
-          memcpy(meta->host_shadow.data(), data, size);
-      }
+           meta->host_shadow.resize(size);
+           memcpy(meta->host_shadow.data(), data, size);
+       }
 
       GGML_ASSERT(offset == 0);
 
